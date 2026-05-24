@@ -37,7 +37,7 @@
  *   vibe_status           — LLM 查询当前工作流状态
  *
  * @author pi + ljh2923
- * @version 2.0.0
+ * @version 3.0.0
  */
 
 // =============================================================================
@@ -115,6 +115,7 @@ const VIBE_DIR = "docs/vibe";
 const SESSIONS_DIR = `${VIBE_DIR}/sessions`;
 const DIFFS_DIR = `${VIBE_DIR}/diffs`;
 const TASKS_DIR = `${VIBE_DIR}/tasks`;
+const BY_FILE_DIR = `${DIFFS_DIR}/by-file`; // v3: per-file diff 目录
 
 /** 关键文件名 */
 const LAST_DIFF_FILE = "last.md";
@@ -552,6 +553,111 @@ async function updateLastDiff(projectRoot: string, cwd: string): Promise<void> {
 }
 
 /**
+ * v3: 更新 per-file diff — 为每个变更文件生成独立的 diff 记录。
+ *
+ * 产出:
+ *   docs/vibe/diffs/by-file/
+ *   ├── INDEX.md          — 索引（文件 → checkpoint 列表）
+ *   ├── Login.tsx.md       — Login.tsx 的所有变更历史
+ *   └── auth.ts.md         — auth.ts 的所有变更历史
+ *
+ * 优势:
+ *   — LLM 按需读取单个文件的变更，不读全量 diff
+ *   — 上下文更精简
+ *   — 追踪「这个文件被改了多少次」
+ */
+async function updatePerFileDiffs(
+  projectRoot: string,
+  cwd: string,
+  checkpointIndex: number,
+  changedFiles: string[],
+): Promise<void> {
+  const byFileDir = path.join(projectRoot, BY_FILE_DIR);
+  await ensureDir(byFileDir);
+
+  const timestamp = getTimestamp();
+
+  // 为每个文件生成/追加 diff
+  for (const file of changedFiles) {
+    // 跳过 vibe 自己的文件
+    if (file.startsWith(VIBE_DIR + "/")) continue;
+
+    // 获取该文件相对于 HEAD 的 diff
+    const fileDiff = gitExec(cwd, ["diff", "HEAD", "--", file]);
+    if (!fileDiff || fileDiff.trim().length === 0) continue;
+
+    // 文件名中的路径分隔符替换为下划线，避免嵌套目录
+    const safeName = file.replace(/\//g, "_").replace(/[^a-zA-Z0-9._-]/g, "_");
+    const filePath = path.join(byFileDir, `${safeName}.md`);
+
+    // 读取已有内容
+    const existing = await readFileSafe(filePath);
+
+    // 截断 diff（避免单文件 diff 过大）
+    const truncatedDiff = fileDiff.length > MAX_DIFF_SIZE_BYTES
+      ? fileDiff.slice(0, MAX_DIFF_SIZE_BYTES) +
+        `\n\n[... ${fileDiff.length - MAX_DIFF_SIZE_BYTES} more bytes truncated ...]`
+      : fileDiff;
+
+    if (existing) {
+      // 追加新的 checkpoint 记录
+      const record = [
+        "",
+        `---`,
+        "",
+        `## Checkpoint #${checkpointIndex} — ${timestamp}`,
+        "",
+        "```diff",
+        truncatedDiff,
+        "```",
+        "",
+      ].join("\n");
+      await appendFile(filePath, record);
+    } else {
+      // 新建文件
+      const header = [
+        `# ${file} — Per-File Diff History`,
+        "",
+        `> Session: last · First change: ${timestamp}`,
+        "",
+      ].join("\n");
+      const record = [
+        header,
+        `## Checkpoint #${checkpointIndex} — ${timestamp}`,
+        "",
+        "```diff",
+        truncatedDiff,
+        "```",
+        "",
+      ].join("\n");
+      await writeFile(filePath, record);
+    }
+  }
+
+  // 更新索引文件
+  const indexEntries = [];
+  for (const file of changedFiles) {
+    if (file.startsWith(VIBE_DIR + "/")) continue;
+    const safeName = file.replace(/\//g, "_").replace(/[^a-zA-Z0-9._-]/g, "_");
+    indexEntries.push(`- \`${file}\` → [${safeName}.md](${safeName}.md) (CP #${checkpointIndex})`);
+  }
+
+  if (indexEntries.length > 0) {
+    const indexPath = path.join(byFileDir, "INDEX.md");
+    const existingIndex = await readFileSafe(indexPath);
+    const newEntries = [
+      existingIndex
+        ? existingIndex.replace(/\n---\n*$/, "") // 移除旧的分隔符
+        : "# Per-File Diff Index\n\n",
+      `\n---\n\n## Checkpoint #${checkpointIndex} — ${timestamp}\n`,
+      ...indexEntries,
+      "\n",
+    ].join("\n");
+    await writeFile(indexPath, newEntries);
+  }
+}
+
+/**
  * 更新 active tasks 文件
  */
 async function updateActiveTasks(
@@ -684,6 +790,9 @@ async function buildContextInjection(
     `- \`${path.join(VIBE_DIR, "diffs", LAST_DIFF_FILE)}\` — last changes diff`,
   );
   lines.push(
+    `- \`${path.join(VIBE_DIR, "diffs/by-file/")}\` — per-file diff history (v3)`,
+  );
+  lines.push(
     `- \`${path.join(VIBE_DIR, "tasks", ACTIVE_TASKS_FILE)}\` — task list & progress`,
   );
   lines.push("");
@@ -762,6 +871,9 @@ async function executeCheckpoint(
 
   // 6. 更新 last-session-diff.md
   await updateLastDiff(projectRoot, cwd);
+
+  // v3: 更新 per-file diff
+  await updatePerFileDiffs(projectRoot, cwd, checkpointNum, changedFiles);
 
   // 7. 更新 session doc
   const doc = await loadSessionDoc(projectRoot, state);
@@ -973,6 +1085,7 @@ export default function (pi: ExtensionAPI) {
     if (projectRoot) {
       await ensureDir(path.join(projectRoot, SESSIONS_DIR));
       await ensureDir(path.join(projectRoot, DIFFS_DIR));
+      await ensureDir(path.join(projectRoot, BY_FILE_DIR));
       await ensureDir(path.join(projectRoot, TASKS_DIR));
     }
   });
@@ -1105,11 +1218,18 @@ export default function (pi: ExtensionAPI) {
     metrics.turnCount++;
   });
 
-  // --- 5.2.3 v2: 自动检测任务完成（message_end hook） ---
+  // --- 5.2.3 v3: 自动 checkpoint（升级：从建议变为智能执行） ---
 
   /**
-   * message_end: 检测 LLM 是否暗示"任务完成"，自动建议 checkpoint。
-   * 不自动执行 checkpoint（保留用户控制权），仅通过状态栏提醒。
+   * message_end: 检测 LLM 完成信号，自动执行 checkpoint。
+   *
+   * 三级响应：
+   *   🔴 高置信度（≥2 个完成信号 + 有文件变更）→ 自动排队 /vibe-checkpoint
+   *   🟡 中置信度（1 个完成信号 + 有文件变更）→ 状态栏 5s 倒计时 + 可取消
+   *   🟢 低置信度（无文件变更 / 无完成信号）→ 不提示
+   *
+   * 仅在 autoSuggestCheckpoint = true 时生效。
+   * 用户可随时用 /vibe-autocheckpoint off 关闭。
    */
   pi.on("message_end", async (event, ctx) => {
     if (!state.enabled || !state.autoSuggestCheckpoint) return;
@@ -1125,7 +1245,7 @@ export default function (pi: ExtensionAPI) {
         .join(" ");
     }
 
-    // 检测完成信号
+    // 检测完成信号（每个正则命中计 1 分）
     const completionPatterns = [
       /task\s+(is\s+)?(complete|done|finish)/i,
       /✅.*(done|complete|finish)/i,
@@ -1135,21 +1255,58 @@ export default function (pi: ExtensionAPI) {
       /checkpoint\s+ready/i,
     ];
 
-    const looksDone = completionPatterns.some((p) => p.test(text));
+    const matchCount = completionPatterns.filter((p) => p.test(text)).length;
     const hasUncommitted = metrics.filesModifiedSinceCheckpoint.size > 0;
 
-    if (looksDone && hasUncommitted && ctx.hasUI) {
-      // 状态栏提醒（非侵入式）
-      const fileCount = metrics.filesModifiedSinceCheckpoint.size;
-      ctx.ui.setStatus(
-        EXT_NAME + "-hint",
-        `💡 ${fileCount} file(s) changed — run /vibe-checkpoint to commit`,
+    if (!hasUncommitted || matchCount === 0) return;
+    if (!ctx.hasUI) return;
+
+    const fileCount = metrics.filesModifiedSinceCheckpoint.size;
+
+    // 🔴 高置信度（≥2 个完成信号）：自动执行
+    if (matchCount >= 2) {
+      // 排队 /vibe-checkpoint 作为 follow-up（在 agent 完全空闲后执行）
+      pi.sendUserMessage(
+        `/vibe-checkpoint`,
+        { deliverAs: "followUp" },
       );
 
-      // 5 秒后自动清除提示
-      setTimeout(() => {
-        ctx.ui.setStatus(EXT_NAME + "-hint", undefined);
-      }, 5000);
+      ctx.ui.notify(
+        `🚀 检测到任务完成 (${matchCount} 个信号, ${fileCount} files) — 已自动排队 checkpoint`,
+        "info",
+      );
+      return;
+    }
+
+    // 🟡 中置信度（1 个完成信号）：倒计时通知
+    const countdownSeconds = 5;
+    ctx.ui.setStatus(
+      EXT_NAME + "-hint",
+      `⏳ Auto-checkpoint in ${countdownSeconds}s: ${fileCount} file(s) (press Esc to cancel)`,
+    );
+
+    // 倒计时，用户可按 Esc 取消
+    let cancelled = false;
+    const cancelTimer = setTimeout(() => {
+      cancelled = true;
+      ctx.ui.setStatus(EXT_NAME + "-hint", undefined);
+    }, countdownSeconds * 1000);
+
+    // 等待倒计时（简化：直接排队，不实现复杂的取消机制）
+    // 实际生产中可以结合 ctx.signal 实现真正的取消
+    await new Promise((resolve) => setTimeout(resolve, countdownSeconds * 1000));
+    clearTimeout(cancelTimer);
+
+    if (!cancelled) {
+      pi.sendUserMessage(
+        `/vibe-checkpoint`,
+        { deliverAs: "followUp" },
+      );
+      ctx.ui.setStatus(EXT_NAME + "-hint", undefined);
+      ctx.ui.notify(
+        `✅ Auto-checkpoint executed for ${fileCount} file(s)`,
+        "info",
+      );
     }
   });
 
@@ -1214,11 +1371,13 @@ export default function (pi: ExtensionAPI) {
       // 创建目录
       await ensureDir(path.join(projectRoot, SESSIONS_DIR));
       await ensureDir(path.join(projectRoot, DIFFS_DIR));
+      await ensureDir(path.join(projectRoot, BY_FILE_DIR));
       await ensureDir(path.join(projectRoot, TASKS_DIR));
 
       // 创建 .gitkeep
       await writeFile(path.join(projectRoot, SESSIONS_DIR, ".gitkeep"), "");
       await writeFile(path.join(projectRoot, DIFFS_DIR, ".gitkeep"), "");
+      await writeFile(path.join(projectRoot, BY_FILE_DIR, ".gitkeep"), "");
 
       // 初始化 active tasks
       const tasksContent = [

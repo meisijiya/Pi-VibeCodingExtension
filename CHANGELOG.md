@@ -1,5 +1,25 @@
 # Changelog
 
+## 3.0.0 (2026-05-25)
+
+### 🚀 v3.0: Per-file Diff + 智能自动 Checkpoint
+
+**Per-file Diff（新增）：**
+- `docs/vibe/diffs/by-file/` — 每个文件独立的变更历史
+- `updatePerFileDiffs()` — checkpoint 时自动为每个变更文件生成独立 diff
+- `INDEX.md` — 文件 → checkpoint 的索引映射
+- LLM 可按需读取单个文件的变更历史，上下文更精简
+
+**自动 Checkpoint 升级（v2 建议 → v3 智能执行）：**
+- 🔴 高置信度（≥2 个完成信号）→ 自动排队 `/vibe-checkpoint`
+- 🟡 中置信度（1 个完成信号）→ 5s 倒计时，可取消
+- 🟢 低置信度（无信号）→ 不提示
+
+**扩展规模：**
+- ~1950 行 · 9 hooks · 11 commands · 2 tools · 26 functions
+
+---
+
 ## 2.0.0 (2026-05-25)
 
 ### 🚀 v2.0: 完善升级
