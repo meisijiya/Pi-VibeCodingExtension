@@ -37,7 +37,7 @@
  *   vibe_status           — LLM 查询当前工作流状态
  *
  * @author pi + ljh2923
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 // =============================================================================
@@ -68,6 +68,22 @@ interface VibeState {
   sessionId: string;
   /** 项目根目录（git root 或 cwd） */
   projectRoot: string;
+  /** v2: 是否自动建议 checkpoint（检测到任务完成时） */
+  autoSuggestCheckpoint: boolean;
+}
+
+/** v2: 指标追踪（不持久化，session 内统计） */
+interface VibeMetrics {
+  /** 每个 checkpoint 的文件变更数 */
+  filesPerCheckpoint: number[];
+  /** 每个 checkpoint 的大致时间 */
+  checkpointTimestamps: string[];
+  /** 上次 checkpoint 以来 LLM 修改的文件（通过 tool_result 追踪） */
+  filesModifiedSinceCheckpoint: Set<string>;
+  /** session 内 LLM turn 计数 */
+  turnCount: number;
+  /** session 内 LLM 调用的工具次数 */
+  toolCallCount: number;
 }
 
 /** checkpoint 记录 */
@@ -739,6 +755,11 @@ async function executeCheckpoint(
   // 5. 更新状态
   state.checkpointCount = checkpointNum;
 
+  // v2: 记录 metrics
+  metrics.filesPerCheckpoint.push(changedFiles.length);
+  metrics.checkpointTimestamps.push(getTimestamp());
+  metrics.filesModifiedSinceCheckpoint.clear();
+
   // 6. 更新 last-session-diff.md
   await updateLastDiff(projectRoot, cwd);
 
@@ -859,7 +880,28 @@ export default function (pi: ExtensionAPI) {
     checkpointCount: 0,
     sessionId: generateSessionId(),
     projectRoot: "",
+    autoSuggestCheckpoint: true,
   };
+
+  /** v2: 指标追踪（session 内统计，不持久化） */
+  let metrics: VibeMetrics = {
+    filesPerCheckpoint: [],
+    checkpointTimestamps: [],
+    filesModifiedSinceCheckpoint: new Set(),
+    turnCount: 0,
+    toolCallCount: 0,
+  };
+
+  /** 重置指标 */
+  function resetMetrics(): void {
+    metrics = {
+      filesPerCheckpoint: [],
+      checkpointTimestamps: [],
+      filesModifiedSinceCheckpoint: new Set(),
+      turnCount: 0,
+      toolCallCount: 0,
+    };
+  }
 
   /**
    * 从持久化存储恢复状态（在 session_start 中调用）
@@ -923,6 +965,8 @@ export default function (pi: ExtensionAPI) {
     await restoreState(ctx);
     // 重置注入标记，新 session 首次 prompt 会注入上下文
     lastInjectedStateHash = "";
+    // v2: 重置指标
+    resetMetrics();
 
     // 确保 vibe 目录存在
     const projectRoot = state.projectRoot;
@@ -1009,7 +1053,153 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
-  // --- 5.3 Commands ---
+  // --- 5.2.1 v2: 文件变更追踪（tool_result hook） ---
+
+  /**
+   * tool_result: 追踪 LLM 通过内置工具修改了哪些文件。
+   * 用于：
+   *   1. 自动提醒 checkpoint（当文件积累到一定数量）
+   *   2. metrics 统计（每个 checkpoint 改了多少文件）
+   */
+  pi.on("tool_result", async (event, _ctx) => {
+    if (!state.enabled) return;
+
+    metrics.toolCallCount++;
+
+    // 追踪 write / edit 工具修改的文件
+    const fileModifyingTools = ["write", "edit"];
+    if (
+      fileModifyingTools.includes(event.toolName) &&
+      !event.isError
+    ) {
+      const input = event.input as { path?: string };
+      if (input.path) {
+        metrics.filesModifiedSinceCheckpoint.add(input.path);
+      }
+    }
+
+    // 追踪 bash 工具中涉及的文件操作（通过 git diff，轻量判断）
+    if (event.toolName === "bash" && !event.isError) {
+      const input = event.input as { command?: string };
+      const cmd = input.command || "";
+      // 检测常见的文件创建/修改命令
+      const fileOps = cmd.match(
+        /(?:touch|mkdir|cp|mv|rm|sed\s+-i|tee|>)\s+(['"]?)([^\s|;&]+)\1?/g,
+      );
+      if (fileOps) {
+        for (const op of fileOps) {
+          const file = op.replace(/^(touch|mkdir|cp|mv|rm|sed\s+-i|tee)\s+/, "").replace(/>\s*/, "").replace(/['"]/g, "").trim();
+          if (file && !file.startsWith("-") && !file.startsWith("/dev/")) {
+            metrics.filesModifiedSinceCheckpoint.add(file);
+          }
+        }
+      }
+    }
+  });
+
+  // --- 5.2.2 v2: Turn 计数 ---
+
+  /** track turn count for metrics */
+  pi.on("turn_start", async () => {
+    if (!state.enabled) return;
+    metrics.turnCount++;
+  });
+
+  // --- 5.2.3 v2: 自动检测任务完成（message_end hook） ---
+
+  /**
+   * message_end: 检测 LLM 是否暗示"任务完成"，自动建议 checkpoint。
+   * 不自动执行 checkpoint（保留用户控制权），仅通过状态栏提醒。
+   */
+  pi.on("message_end", async (event, ctx) => {
+    if (!state.enabled || !state.autoSuggestCheckpoint) return;
+    if (event.message.role !== "assistant") return;
+
+    // 提取 assistant 消息文本
+    const content = event.message.content;
+    let text = "";
+    if (Array.isArray(content)) {
+      text = content
+        .filter((c): c is { type: "text"; text: string } => c.type === "text")
+        .map((c) => c.text)
+        .join(" ");
+    }
+
+    // 检测完成信号
+    const completionPatterns = [
+      /task\s+(is\s+)?(complete|done|finish)/i,
+      /✅.*(done|complete|finish)/i,
+      /all\s+(tests?\s+)?pass/i,
+      /implementation\s+(is\s+)?complete/i,
+      /ready\s+for\s+(review|merge|checkpoint)/i,
+      /checkpoint\s+ready/i,
+    ];
+
+    const looksDone = completionPatterns.some((p) => p.test(text));
+    const hasUncommitted = metrics.filesModifiedSinceCheckpoint.size > 0;
+
+    if (looksDone && hasUncommitted && ctx.hasUI) {
+      // 状态栏提醒（非侵入式）
+      const fileCount = metrics.filesModifiedSinceCheckpoint.size;
+      ctx.ui.setStatus(
+        EXT_NAME + "-hint",
+        `💡 ${fileCount} file(s) changed — run /vibe-checkpoint to commit`,
+      );
+
+      // 5 秒后自动清除提示
+      setTimeout(() => {
+        ctx.ui.setStatus(EXT_NAME + "-hint", undefined);
+      }, 5000);
+    }
+  });
+
+  // --- 5.2.4 v2: Session 切换前检查未提交变更 ---
+
+  /**
+   * session_before_switch / session_before_fork:
+   *   切换 session 或 fork 前，检查是否有未提交的变更。
+   *   防止丢失进度。
+   */
+  async function checkUncommittedBeforeSwitch(
+    ctx: ExtensionContext,
+    action: string,
+  ): Promise<{ cancel: boolean } | undefined> {
+    if (!state.enabled) return;
+
+    // 检查 git 状态
+    const changedFiles = isGitRepo(state.projectRoot)
+      ? getChangedFiles(state.projectRoot)
+      : [];
+
+    if (changedFiles.length === 0) return;
+
+    if (!ctx.hasUI) {
+      // 非交互模式，默认阻止
+      return { cancel: true };
+    }
+
+    const choice = await ctx.ui.select(
+      `⚠️  ${changedFiles.length} file(s) uncommitted. ${action}?`,
+      [
+        `Yes, ${action.toLowerCase()} (changes will stay uncommitted)`,
+        "No, let me checkpoint first",
+      ],
+    );
+
+    if (!choice || choice.includes("checkpoint")) {
+      ctx.ui.notify("💡 Run /vibe-checkpoint to commit changes", "warning");
+      return { cancel: true };
+    }
+  }
+
+  pi.on("session_before_switch", async (event, ctx) => {
+    const action = event.reason === "new" ? "Start new session" : "Switch session";
+    return checkUncommittedBeforeSwitch(ctx, action);
+  });
+
+  pi.on("session_before_fork", async (_event, ctx) => {
+    return checkUncommittedBeforeSwitch(ctx, "Fork session");
+  });
 
   /**
    * /vibe-init — 初始化项目 vibe 工作流
@@ -1304,7 +1494,174 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // --- 5.4 Tools (LLM 可调用) ---
+  // --- 5.3.1 v2: /vibe-plan — 桥接 writing-plans skill ---
+
+  /**
+   * /vibe-plan — 触发 /skill:writing-plans 生成实现计划。
+   * 将当前 vibe 状态（任务名、session、已完成的 checkpoint）作为上下文传给 skill。
+   */
+  pi.registerCommand("vibe-plan", {
+    description:
+      "桥接 /skill:writing-plans：将当前任务上下文传给 writing-plans skill 生成实现计划",
+    handler: async (_args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify(
+          "⚠️ Vibe 工作流未启用。请先运行 /vibe-enable",
+          "warning",
+        );
+        return;
+      }
+
+      // 构建传给 writing-plans 的上下文
+      const contextParts: string[] = [];
+      if (state.currentTask) {
+        contextParts.push(`【当前任务: ${state.currentTask}】`);
+      }
+      contextParts.push(`【Session: ${state.sessionId}】`);
+      contextParts.push(`【已完成 Checkpoints: ${state.checkpointCount}】`);
+
+      // 检查是否有已有的 PRD 或 spec
+      const prdPaths = [
+        "docs/prd",
+        "docs/spec",
+        "spec",
+      ];
+      for (const p of prdPaths) {
+        const fullPath = path.join(state.projectRoot, p);
+        if (fs.existsSync(fullPath)) {
+          contextParts.push(`【参考文档: ${p}/】`);
+          break;
+        }
+      }
+
+      const skillArgs = contextParts.join(" ");
+      pi.sendUserMessage(
+        `/skill:writing-plans ${skillArgs}`,
+        { deliverAs: "followUp" },
+      );
+
+      ctx.ui.notify(
+        `📋 已排队 /skill:writing-plans\n` +
+          `   上下文: ${contextParts.join(" · ")}`,
+        "info",
+      );
+    },
+  });
+
+  // --- 5.3.2 v2: /vibe-metrics — 显示工作流指标 ---
+
+  /**
+   * /vibe-metrics — 显示 session 内的工作流统计指标。
+   */
+  pi.registerCommand("vibe-metrics", {
+    description: "显示 Vibe 工作流统计指标（checkpoint 频率、文件变更数、turn 数等）",
+    handler: async (_args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify(
+          "⚠️ Vibe 工作流未启用。请先运行 /vibe-enable",
+          "warning",
+        );
+        return;
+      }
+
+      const lines: string[] = [];
+      lines.push("## 📊 Vibe Workflow Metrics");
+      lines.push("");
+
+      // Session 概览
+      lines.push("### Session Overview");
+      lines.push(`| 指标 | 值 |`);
+      lines.push(`|------|----|`);
+      lines.push(`| Session | \`${state.sessionId}\` |`);
+      lines.push(`| Checkpoints | ${state.checkpointCount} |`);
+      lines.push(`| LLM Turns | ${metrics.turnCount} |`);
+      lines.push(`| Tool Calls | ${metrics.toolCallCount} |`);
+      lines.push(
+        `| Files pending checkpoint | ${metrics.filesModifiedSinceCheckpoint.size} |`,
+      );
+      lines.push("");
+
+      // Checkpoint 详情
+      if (metrics.filesPerCheckpoint.length > 0) {
+        lines.push("### Checkpoint Details");
+        lines.push("| # | Files Changed | Time |");
+        lines.push("|---|--------------|------|");
+
+        const totalFiles = metrics.filesPerCheckpoint.reduce(
+          (a, b) => a + b,
+          0,
+        );
+        const avgFiles = (totalFiles / metrics.filesPerCheckpoint.length).toFixed(1);
+
+        for (let i = 0; i < metrics.filesPerCheckpoint.length; i++) {
+          const time = metrics.checkpointTimestamps[i]
+            ? new Date(metrics.checkpointTimestamps[i]).toLocaleTimeString()
+            : "-";
+          lines.push(
+            `| ${i + 1} | ${metrics.filesPerCheckpoint[i]} | ${time} |`,
+          );
+        }
+
+        lines.push("");
+        lines.push(`**总计**: ${totalFiles} files · 平均 ${avgFiles} files/checkpoint`);
+        lines.push("");
+      }
+
+      // 效率指标
+      if (metrics.turnCount > 0) {
+        const turnsPerCheckpoint = metrics.checkpointCount > 0
+          ? (metrics.turnCount / metrics.checkpointCount).toFixed(1)
+          : "N/A";
+        lines.push("### Efficiency");
+        lines.push(`- Turns/Checkpoint: **${turnsPerCheckpoint}**`);
+        lines.push(
+          `- Avg files/checkpoint: **${
+            metrics.filesPerCheckpoint.length > 0
+              ? (
+                  metrics.filesPerCheckpoint.reduce((a, b) => a + b, 0) /
+                  metrics.filesPerCheckpoint.length
+                ).toFixed(1)
+              : "N/A"
+          }**`,
+        );
+        lines.push("");
+      }
+
+      lines.push("---");
+      lines.push(
+        `_Tip: 理想的 Turns/Checkpoint 在 2-5 之间，表示任务粒度合适_`,
+      );
+
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  // --- 5.3.3 v2: /vibe-autocheckpoint — 切换自动建议 ---
+
+  /**
+   * /vibe-autocheckpoint — 开启/关闭自动 checkpoint 建议。
+   * 开启时：检测到 LLM 说"done/complete"会自动在状态栏提示 checkpoint。
+   */
+  pi.registerCommand("vibe-autocheckpoint", {
+    description:
+      "切换自动 checkpoint 建议（on/off）。开启时 LLM 说 done 会自动提示",
+    handler: async (args, ctx) => {
+      if (args?.trim() === "off") {
+        state.autoSuggestCheckpoint = false;
+        ctx.ui.notify("🔕 自动 checkpoint 建议已关闭", "info");
+      } else if (args?.trim() === "on") {
+        state.autoSuggestCheckpoint = true;
+        ctx.ui.notify("🔔 自动 checkpoint 建议已开启", "info");
+      } else {
+        const status = state.autoSuggestCheckpoint ? "🔔 ON" : "🔕 OFF";
+        ctx.ui.notify(
+          `自动 checkpoint 建议: ${status}\n用法: /vibe-autocheckpoint on|off`,
+          "info",
+        );
+      }
+      await pi.appendEntry(EXT_NAME, state);
+    },
+  });
 
   /**
    * vibe_checkpoint — LLM 完成任务后调用，触发 git commit

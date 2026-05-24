@@ -190,6 +190,19 @@ LLM 也可以调用 `vibe_checkpoint` 工具达到相同效果。
 ### `/vibe-context`
 预览会注入到每次对话的上下文内容（调试用）。
 
+### `/vibe-plan` 🆕 v2
+桥接 `/skill:writing-plans`：自动将当前任务名、session 状态、已完成 checkpoint 数作为上下文传给 writing-plans skill，生成实现计划。
+
+### `/vibe-metrics` 🆕 v2
+显示工作流统计面板：
+- Checkpoint 频率（Turns/Checkpoint，理想值 2-5）
+- 每个 checkpoint 的文件变更数
+- Session 内的 LLM turn 数和工具调用数
+- 平均文件变更数
+
+### `/vibe-autocheckpoint [on|off]` 🆕 v2
+切换自动 checkpoint 建议。开启时（默认）：当 LLM 说 "done"/"complete"等完成信号时，自动在状态栏提示 checkpoint。关闭：仅手动触发。
+
 ---
 
 ## 🤝 与现有 Skills 联动
