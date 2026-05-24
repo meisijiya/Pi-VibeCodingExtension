@@ -37,7 +37,7 @@
  *   vibe_status           — LLM 查询当前工作流状态
  *
  * @author pi + ljh2923
- * @version 3.0.0
+ * @version 4.0.0
  */
 
 // =============================================================================
@@ -1819,6 +1819,609 @@ export default function (pi: ExtensionAPI) {
         );
       }
       await pi.appendEntry(EXT_NAME, state);
+    },
+  });
+
+  // ===================================================================
+  // 5.3.4 v4: 高级 Git 工作流命令
+  // ===================================================================
+
+  /**
+   * /vibe-squash — 压缩最近的 checkpoint commit 为一个
+   *
+   * 场景: 一个任务产生了 5 个 checkpoint commit，想合并为一个干净的 commit。
+   * 用法: /vibe-squash [N]
+   *   /vibe-squash      → 交互选择压缩到哪个 checkpoint
+   *   /vibe-squash 3    → 压缩最近 3 个 checkpoint
+   */
+  pi.registerCommand("vibe-squash", {
+    description:
+      "压缩最近的 vibe checkpoint commit 为一个干净的 commit",
+    handler: async (args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify("⚠️ Vibe 工作流未启用", "warning");
+        return;
+      }
+      if (!isGitRepo(state.projectRoot)) {
+        ctx.ui.notify("⚠️ 非 Git 仓库", "warning");
+        return;
+      }
+
+      // 获取 vibe checkpoint commit 列表（匹配 "Checkpoint:" 标记）
+      const logOutput = gitExec(
+        state.projectRoot,
+        ["log", "--oneline", "-30", "--grep=Checkpoint:", "--grep=Session:"],
+      );
+
+      if (!logOutput) {
+        ctx.ui.notify("📝 没有找到 vibe checkpoint commit", "info");
+        return;
+      }
+
+      const commits = logOutput.split("\n").filter(Boolean);
+      if (commits.length < 2) {
+        ctx.ui.notify(
+          "📝 至少需要 2 个 checkpoint commit 才能压缩",
+          "info",
+        );
+        return;
+      }
+
+      // 解析数量参数
+      let count = 0;
+      if (args?.trim()) {
+        count = parseInt(args.trim(), 10);
+      }
+
+      if (!count || count < 2) {
+        // 交互选择
+        if (!ctx.hasUI) {
+          ctx.ui.notify("用法: /vibe-squash <数量>", "warning");
+          return;
+        }
+        const choices = commits.map(
+          (c, i) => `${i + 1}. ${c.substring(0, 80)}`,
+        );
+        const choice = await ctx.ui.select(
+          `选择压缩范围（保留最早的，压缩后续的）: 共 ${commits.length} 个 checkpoint`,
+          [
+            ...choices,
+            `全部压缩为 1 个 (${commits.length} commits)`,
+          ],
+        );
+        if (!choice) return;
+
+        if (choice.includes("全部")) {
+          count = commits.length;
+        } else {
+          const idx = choices.indexOf(choice);
+          count = idx >= 0 ? idx + 1 : 0;
+        }
+      }
+
+      if (count < 2 || count > commits.length) {
+        ctx.ui.notify(`数量需在 2-${commits.length} 之间`, "warning");
+        return;
+      }
+
+      // 确认
+      if (ctx.hasUI) {
+        const confirmed = await ctx.ui.confirm(
+          "⚠️ Squash 操作不可逆",
+          `压缩最近 ${count} 个 checkpoint commit 为 1 个。` +
+            `\nCommit 列表:\n${commits.slice(0, count).join("\n")}\n\n确认？`,
+        );
+        if (!confirmed) return;
+      }
+
+      // 执行 soft reset + 重新 commit
+      const targetHash = gitExec(state.projectRoot, [
+        "rev-parse",
+        `HEAD~${count}`,
+      ]);
+      if (!targetHash) {
+        ctx.ui.notify("❌ 无法找到目标 commit", "error");
+        return;
+      }
+
+      // Soft reset（保留工作区变更）
+      const resetResult = gitExec(state.projectRoot, [
+        "reset",
+        "--soft",
+        `HEAD~${count}`,
+      ]);
+      if (resetResult === null) {
+        ctx.ui.notify("❌ Reset 失败", "error");
+        return;
+      }
+
+      // 重新 commit
+      const squashMsg = [
+        `[squash] ${state.currentTask || "vibe-task"}: ${count} checkpoints → 1`,
+        "",
+        `Session: ${state.sessionId}`,
+        `Squashed: ${count} checkpoints`,
+      ].join("\n");
+
+      const commitResult = gitExec(state.projectRoot, [
+        "commit",
+        "-m",
+        squashMsg,
+        "--no-verify",
+      ]);
+
+      if (commitResult === null) {
+        ctx.ui.notify("❌ Commit 失败，尝试 git reset HEAD@{1} 恢复", "error");
+        return;
+      }
+
+      const newHash = gitExec(state.projectRoot, ["rev-parse", "--short", "HEAD"]);
+
+      // 更新 vibe 状态
+      state.checkpointCount = Math.max(1, state.checkpointCount - count + 1);
+      await pi.appendEntry(EXT_NAME, state);
+
+      ctx.ui.notify(
+        `✅ 已压缩 ${count} 个 checkpoint → 1 个 commit\n` +
+          `   New commit: \`${newHash}\` · Checkpoints: ${state.checkpointCount}`,
+        "info",
+      );
+    },
+  });
+
+  /**
+   * /vibe-rollback — 回滚到指定 checkpoint
+   *
+   * 安全策略: 自动创建备份分支，然后 revert/reset。
+   * 用法:
+   *   /vibe-rollback        → 列出 checkpoint，选择回滚目标
+   *   /vibe-rollback 3      → 回滚到第 3 个 checkpoint
+   *   /vibe-rollback --hard → hard reset（丢弃变更）
+   */
+  pi.registerCommand("vibe-rollback", {
+    description:
+      "安全回滚到指定 checkpoint（自动创建备份分支）",
+    handler: async (args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify("⚠️ Vibe 工作流未启用", "warning");
+        return;
+      }
+      if (!isGitRepo(state.projectRoot)) {
+        ctx.ui.notify("⚠️ 非 Git 仓库", "warning");
+        return;
+      }
+
+      const isHard = args?.includes("--hard");
+
+      // 获取 vibe checkpoint commit
+      const logOutput = gitExec(state.projectRoot, [
+        "log",
+        "--oneline",
+        "-30",
+        "--grep=Checkpoint:",
+      ]);
+
+      if (!logOutput) {
+        ctx.ui.notify("📝 没有找到 vibe checkpoint commit", "info");
+        return;
+      }
+
+      const commits = logOutput.split("\n").filter(Boolean);
+
+      // 选择目标 checkpoint
+      let targetIdx = 0;
+      const numArg = args?.replace("--hard", "").trim();
+      if (numArg) {
+        targetIdx = parseInt(numArg, 10) - 1;
+      } else if (ctx.hasUI) {
+        const choices = commits.map(
+          (c, i) => `${i + 1}. ${c.substring(0, 80)} (HEAD~${commits.length - 1 - i})`,
+        );
+        const choice = await ctx.ui.select(
+          "选择回滚目标 checkpoint:",
+          choices,
+        );
+        if (!choice) return;
+        targetIdx = choices.indexOf(choice);
+      } else {
+        ctx.ui.notify("用法: /vibe-rollback <checkpoint编号>", "warning");
+        return;
+      }
+
+      if (targetIdx < 0 || targetIdx >= commits.length) {
+        ctx.ui.notify("❌ 无效的 checkpoint 编号", "error");
+        return;
+      }
+
+      const targetHash = gitExec(state.projectRoot, [
+        "rev-parse",
+        "--short",
+        `HEAD~${commits.length - 1 - targetIdx}`,
+      ]);
+
+      if (!targetHash) {
+        ctx.ui.notify("❌ 无法解析目标 commit", "error");
+        return;
+      }
+
+      // 确认
+      if (ctx.hasUI) {
+        const action = isHard ? "HARD RESET（丢弃所有后续变更）" : "REVERT（保留历史）";
+        const confirmed = await ctx.ui.confirm(
+          "⚠️ 回滚操作",
+          `回滚到: \`${targetHash}\`\n` +
+            `方式: ${action}\n` +
+            `备份分支: vibe-backup-${state.sessionId} 将自动创建\n\n确认？`,
+        );
+        if (!confirmed) return;
+      }
+
+      // 创建备份分支
+      const backupBranch = `vibe-backup-${state.sessionId}-${Date.now().toString(36)}`;
+      gitExec(state.projectRoot, ["branch", backupBranch]);
+
+      if (isHard) {
+        // Hard reset
+        const fullHash = gitExec(state.projectRoot, [
+          "rev-parse",
+          `HEAD~${commits.length - 1 - targetIdx}`,
+        ]);
+        const resetResult = gitExec(state.projectRoot, [
+          "reset",
+          "--hard",
+          fullHash!,
+        ]);
+        if (resetResult === null) {
+          ctx.ui.notify("❌ Reset 失败", "error");
+          return;
+        }
+        state.checkpointCount = targetIdx + 1;
+      } else {
+        // Revert 从最新到目标+1 的所有 commit
+        const revertCount = commits.length - 1 - targetIdx;
+        for (let i = 0; i < revertCount; i++) {
+          gitExec(state.projectRoot, [
+            "revert",
+            "--no-edit",
+            "--no-verify",
+            "HEAD",
+          ]);
+        }
+        state.checkpointCount = targetIdx + 1;
+      }
+
+      await pi.appendEntry(EXT_NAME, state);
+
+      ctx.ui.notify(
+        `✅ 已回滚到 checkpoint #${targetIdx + 1} (\`${targetHash}\`)\n` +
+          `   备份分支: \`${backupBranch}\` · 方式: ${isHard ? "hard reset" : "revert"}`,
+        "info",
+      );
+    },
+  });
+
+  /**
+   * /vibe-branch — 创建新的功能开发分支
+   *
+   * 自动从当前 HEAD 创建分支，初始化新的 vibe session。
+   * 配合 /vibe-merge 完成功能开发 → 合并回主线。
+   */
+  pi.registerCommand("vibe-branch", {
+    description:
+      "创建新功能分支 + 初始化 vibe session（配合 /vibe-merge 完成合并）",
+    handler: async (args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify("⚠️ Vibe 工作流未启用", "warning");
+        return;
+      }
+      if (!isGitRepo(state.projectRoot)) {
+        ctx.ui.notify("⚠️ 非 Git 仓库", "warning");
+        return;
+      }
+
+      const branchName = args?.trim() || `vibe-feature-${state.sessionId}`;
+
+      // 确保分支名合法
+      const safeName = branchName
+        .replace(/\s+/g, "-")
+        .replace(/[^a-zA-Z0-9._/-]/g, "")
+        .substring(0, 50);
+
+      if (!safeName) {
+        ctx.ui.notify("❌ 无效的分支名", "error");
+        return;
+      }
+
+      // 检查是否有未提交变更
+      const changedFiles = getChangedFiles(state.projectRoot);
+      if (changedFiles.length > 0) {
+        if (ctx.hasUI) {
+          const choice = await ctx.ui.select(
+            `⚠️  ${changedFiles.length} file(s) uncommitted.`,
+            [
+              "Auto-checkpoint before branching",
+              "Cancel",
+            ],
+          );
+          if (!choice || choice === "Cancel") return;
+          await executeCheckpoint(pi, ctx, state);
+        } else {
+          ctx.ui.notify(
+            "⚠️ 有未提交变更，请先运行 /vibe-checkpoint",
+            "warning",
+          );
+          return;
+        }
+      }
+
+      // 创建分支
+      const branchResult = gitExec(state.projectRoot, [
+        "checkout",
+        "-b",
+        safeName,
+      ]);
+      if (branchResult === null) {
+        ctx.ui.notify("❌ 创建分支失败", "error");
+        return;
+      }
+
+      // 启动新 session
+      state.sessionId = generateSessionId();
+      state.checkpointCount = 0;
+      state.currentTask = `Feature: ${safeName}`;
+      lastInjectedStateHash = "";
+      resetMetrics();
+      await pi.appendEntry(EXT_NAME, state);
+
+      // 更新 session doc
+      const doc = await loadSessionDoc(state.projectRoot, state);
+      doc.nextSteps = [
+        "完成功能开发",
+        "使用 /vibe-checkpoint 提交每个子任务",
+        "使用 /vibe-merge 合并回主分支",
+      ];
+      doc.notes = `Parent branch: ${gitExec(state.projectRoot, ["rev-parse", "--abbrev-ref", "HEAD@{1}"]) || "unknown"}`;
+      await writeSessionDoc(state.projectRoot, state, doc);
+
+      ctx.ui.notify(
+        `🌿 已创建并切换到分支 \`${safeName}\`\n` +
+          `   Session: ${state.sessionId} · Task: Feature: ${safeName}\n` +
+          `   完成后用 /vibe-merge 合并回主分支`,
+        "info",
+      );
+    },
+  });
+
+  /**
+   * /vibe-merge — 合并当前功能分支回主分支
+   *
+   * 自动检测 base 分支，合并并生成 vibe merge commit。
+   */
+  pi.registerCommand("vibe-merge", {
+    description:
+      "合并当前功能分支到主分支（自动检测 base，生成 merge commit）",
+    handler: async (args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify("⚠️ Vibe 工作流未启用", "warning");
+        return;
+      }
+      if (!isGitRepo(state.projectRoot)) {
+        ctx.ui.notify("⚠️ 非 Git 仓库", "warning");
+        return;
+      }
+
+      // 获取当前分支
+      const currentBranch = gitExec(state.projectRoot, [
+        "rev-parse",
+        "--abbrev-ref",
+        "HEAD",
+      ]);
+
+      if (!currentBranch || currentBranch === "HEAD") {
+        ctx.ui.notify("⚠️ 当前在 detached HEAD，无法合并", "warning");
+        return;
+      }
+
+      // 检测 base 分支
+      let baseBranch = "";
+      for (const candidate of ["main", "master", "develop"]) {
+        const exists = gitExec(state.projectRoot, [
+          "rev-parse",
+          "--verify",
+          candidate,
+        ]);
+        if (exists !== null && candidate !== currentBranch) {
+          baseBranch = candidate;
+          break;
+        }
+      }
+
+      if (!baseBranch) {
+        // 交互选择
+        if (ctx.hasUI) {
+          const branches = gitExec(state.projectRoot, ["branch", "--format=%(refname:short)"]);
+          if (branches) {
+            const branchList = branches
+              .split("\n")
+              .filter((b) => b && b !== currentBranch);
+            if (branchList.length > 0) {
+              const choice = await ctx.ui.select(
+                "选择目标合并分支:",
+                branchList,
+              );
+              if (choice) baseBranch = choice;
+            }
+          }
+        }
+        if (!baseBranch) {
+          ctx.ui.notify(
+            "❌ 无法检测 base 分支，请手动指定: /vibe-merge main",
+            "error",
+          );
+          return;
+        }
+      }
+
+      // 确认
+      if (ctx.hasUI) {
+        const confirmed = await ctx.ui.confirm(
+          "🔀 合并确认",
+          `将 \`${currentBranch}\` 合并到 \`${baseBranch}\`\n` +
+            `Checkpoints: ${state.checkpointCount}\n\n确认？`,
+        );
+        if (!confirmed) return;
+      }
+
+      // Checkout base
+      const checkoutResult = gitExec(state.projectRoot, [
+        "checkout",
+        baseBranch,
+      ]);
+      if (checkoutResult === null) {
+        ctx.ui.notify("❌ 切换分支失败", "error");
+        return;
+      }
+
+      // Merge
+      const mergeMsg = [
+        `merge: ${currentBranch} → ${baseBranch}`,
+        "",
+        `Session: ${state.sessionId} · Checkpoints: ${state.checkpointCount}`,
+        `Feature: ${state.currentTask}`,
+      ].join("\n");
+
+      const mergeResult = gitExec(state.projectRoot, [
+        "merge",
+        "--no-ff",
+        "-m",
+        mergeMsg,
+        currentBranch,
+      ]);
+
+      if (mergeResult === null) {
+        // 可能有冲突
+        ctx.ui.notify(
+          "⚠️ 合并可能有冲突。请手动解决后 commit。\n" +
+            `   放弃合并: git merge --abort && git checkout ${currentBranch}`,
+          "warning",
+        );
+        return;
+      }
+
+      const mergeHash = gitExec(state.projectRoot, ["rev-parse", "--short", "HEAD"]);
+
+      ctx.ui.notify(
+        `✅ 已合并 \`${currentBranch}\` → \`${baseBranch}\`\n` +
+          `   Merge commit: \`${mergeHash}\` · Checkpoints: ${state.checkpointCount}\n` +
+          `   删除旧分支: git branch -d ${currentBranch}`,
+        "info",
+      );
+    },
+  });
+
+  /**
+   * /vibe-release — 打 tag + 生成 changelog
+   *
+   * 从 session 的 checkpoint 记录生成 changelog，创建 git tag。
+   * 用法:
+   *   /vibe-release 1.2.0     → tag v1.2.0 + changelog from checkpoints
+   */
+  pi.registerCommand("vibe-release", {
+    description:
+      "打 git tag + 从 checkpoint 生成 changelog",
+    handler: async (args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify("⚠️ Vibe 工作流未启用", "warning");
+        return;
+      }
+      if (!isGitRepo(state.projectRoot)) {
+        ctx.ui.notify("⚠️ 非 Git 仓库", "warning");
+        return;
+      }
+
+      const version = args?.trim();
+      if (!version) {
+        ctx.ui.notify("用法: /vibe-release <version>\n例: /vibe-release 1.2.0", "warning");
+        return;
+      }
+
+      // 确保没有未提交变更
+      const changedFiles = getChangedFiles(state.projectRoot);
+      if (changedFiles.length > 0) {
+        if (ctx.hasUI) {
+          const choice = await ctx.ui.select(
+            `⚠️  ${changedFiles.length} file(s) uncommitted.`,
+            ["Auto-checkpoint then release", "Cancel"],
+          );
+          if (!choice || choice === "Cancel") return;
+          await executeCheckpoint(pi, ctx, state);
+        } else {
+          ctx.ui.notify(
+            "⚠️ 有未提交变更，请先运行 /vibe-checkpoint",
+            "warning",
+          );
+          return;
+        }
+      }
+
+      // 生成 changelog
+      const doc = await loadSessionDoc(state.projectRoot, state);
+      const changelogLines: string[] = [];
+      changelogLines.push(`# ${version} (${new Date().toISOString().split("T")[0]})`);
+      changelogLines.push("");
+      changelogLines.push(`Session: \`${state.sessionId}\` · Checkpoints: ${state.checkpointCount}`);
+      changelogLines.push("");
+
+      if (doc.checkpoints.length > 0) {
+        changelogLines.push("## Changes");
+        changelogLines.push("");
+        for (const cp of doc.checkpoints) {
+          changelogLines.push(
+            `- \`${cp.commitHash}\` ${cp.task || "checkpoint"}: ${cp.filesChanged.length} file(s)`,
+          );
+        }
+        changelogLines.push("");
+      }
+
+      changelogLines.push("---");
+      changelogLines.push(`_Generated by vibe-workflow v3.0_`);
+
+      const changelogContent = changelogLines.join("\n");
+
+      // 写入 changelog
+      const changelogPath = path.join(
+        state.projectRoot,
+        VIBE_DIR,
+        `release-${version}.md`,
+      );
+      await writeFile(changelogPath, changelogContent);
+
+      // 打 tag
+      const tagName = `v${version.replace(/^v/, "")}`;
+      const tagMsg = `Release ${tagName}\n\nSession: ${state.sessionId}\nCheckpoints: ${state.checkpointCount}`;
+      const tagResult = gitExec(state.projectRoot, [
+        "tag",
+        "-a",
+        tagName,
+        "-m",
+        tagMsg,
+      ]);
+
+      if (tagResult === null) {
+        ctx.ui.notify(
+          `⚠️ Tag 创建失败（可能已存在）。Changelog 已生成: docs/vibe/release-${version}.md`,
+          "warning",
+        );
+        return;
+      }
+
+      ctx.ui.notify(
+        `🏷️  Release ${tagName} 完成！\n` +
+          `   Changelog: docs/vibe/release-${version}.md\n` +
+          `   Tag: \`${tagName}\` · Checkpoints: ${state.checkpointCount}\n` +
+          `   推送: git push origin ${tagName}`,
+        "info",
+      );
     },
   });
 
