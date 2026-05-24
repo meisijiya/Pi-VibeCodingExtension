@@ -2719,20 +2719,11 @@ export default function (pi: ExtensionAPI) {
 
       // 自动查找: 搜索所有 provider 中的多模态模型
       if (!visionModel) {
-        const allProviders = ctx.modelRegistry.list();
-        for (const provider of allProviders || []) {
-          const models = ctx.modelRegistry.list(provider);
-          if (models) {
-            visionModel = models.find(
-              (m: { id: string }) =>
-                m.id.toLowerCase().includes("mimo") ||
-                m.id.toLowerCase().includes("vision") ||
-                m.id.toLowerCase().includes("gemini") ||
-                m.id.toLowerCase().includes("claude") ||
-                m.id.toLowerCase().includes("gpt-4o"),
-            );
-            if (visionModel) break;
-          }
+        // modelRegistry.list() 不存在，用 find() 逐个尝试
+        const visionPatterns = ["mimo", "vision", "gemini", "claude", "gpt-4o"];
+        for (const pattern of visionPatterns) {
+          visionModel = ctx.modelRegistry.find(undefined, pattern);
+          if (visionModel) break;
         }
       }
 
