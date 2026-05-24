@@ -101,6 +101,19 @@ pi
 | `minimax_web_search` | LLM 自动调用 | 主力模型搜索网络 |
 | `minimax_generate` | LLM 自动调用 | 生成图片/视频/音频 |
 
+> ⚠️ **重要：谁需要"切回来"？**
+>
+> 大部分命令是**一次性操作**，执行完就结束。只有两类命令改变了**持久状态**，需要主动回退：
+>
+> | 命令 | 改了什么 | 回退方式 |
+> |------|---------|---------|
+> | `/vibe-mimo` | 切换了 pi 模型 | `/vibe-mimo --back` |
+> | `/vibe-enable` | 启用了工作流 | `/vibe-disable` |
+> | `/vibe-branch <name>` | 切换了 git 分支 | `/vibe-merge` 合并回来 |
+> | `/vibe-autocheckpoint off` | 关闭了自动建议 | `/vibe-autocheckpoint on` |
+>
+> `/vibe-minimax`、`/vibe-checkpoint`、`/vibe-squash` 等**不需要 back**——它们只是执行了一次操作，没有改变会话状态。
+
 ---
 
 ## 场景1：新项目从零开始
