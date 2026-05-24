@@ -2818,6 +2818,9 @@ export default function (pi: ExtensionAPI) {
       );
     },
   });
+
+  /**
+   * vibe_checkpoint — LLM 完成任务后调用，触发 git commit
    */
   pi.registerTool({
     name: "vibe_checkpoint",
