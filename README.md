@@ -1,373 +1,588 @@
-# 🎯 Atomic Vibe Workflow — pi Extension
+# 🎯 Pi-VibeCodingExtension
 
-> **把你的 Vibe Coding 从"野路子"变成"规范流程"**  
-> 最小化任务 · Git 原子提交 · 上下文不膨胀 · Skills 全联动
+> **Atomic Vibe Coding 工作流引擎** —— 从 Vibe Coding 实践中总结的「原子化 AI 协作开发」方法论与工具集。
 
----
+在长期 Vibe Coding 实践中，我发现两个核心矛盾：
+1. **大模型会「范围膨胀」** —— 说着说着就开始改不相干的东西
+2. **上下文越用越长** —— 每个新 session 都要重新描述项目状态
 
-## 📖 问题与动机
+解法只有一个：**最小化每一步，让 AI 始终知道「在做什么、做了什么、边界在哪」**。这个 pi 扩展就是这套方法论的工程化落地。
 
-你引用的那段话非常精准地点出了 AI 辅助开发的核心矛盾：
-
-> ❌ **问题**：大模型在长上下文中容易「范围膨胀」——说着说着就开始改不相干的东西  
-> ❌ **问题**：每次新 session 都要重新描述项目状态，浪费 token  
-> ❌ **问题**：没有 commit 记录，改动不可追溯，出了问题回滚困难  
-> ❌ **问题**：压缩上下文（compaction）会丢失关键信息  
-
-### ✅ 优化后的解决方案
-
-| 原始建议 | 优化后 | 为什么 |
-|----------|--------|--------|
-| `last-session-diff.md` 单个文件 | `docs/vibe/diffs/last.md` + 结构化 meta | 带时间戳、commit 关联、不丢失历史 |
-| `handoff.md` 单个文件 | `docs/vibe/sessions/<timestamp>.md` | 不覆盖，每个 session 独立存档 |
-| 无任务跟踪 | `docs/vibe/tasks/active.md` | 显式跟踪当前任务，大模型一目了然 |
-| 手动运行 git | Extension 自动化 + LLM 工具调用 | 减少手动操作，降低出错 |
-| 独立使用 | 与 superpowers + handoff + to-prd 技能联动 | 最大化复用现有能力 |
+[![pi-package](https://img.shields.io/badge/pi-package-blue)](https://pi.dev/packages)
+[![version](https://img.shields.io/badge/version-5.1.0-green)](#)
+[![license](https://img.shields.io/badge/license-MIT-orange)](LICENSE)
 
 ---
 
-## 🏗️ 工作流全景
+## 目录
 
-```
-                        ┌──────────────────────────────────────┐
-                        │          AGENTS.md（项目宪法）          │
-                        │   约束 · 约定 · 任务边界 · 当前聚焦     │
-                        └──────────────┬───────────────────────┘
-                                       │ 被 vibe-workflow 读取并注入
-                                       ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     💬 每一次 AI 对话                              │
-│                                                                 │
-│  注入上下文 = AGENTS.md 约束 + 当前任务 + 上次 diff + 工作流指令    │
-│                                                                 │
-│  ┌──────────┐    ┌──────────────┐    ┌────────────────┐         │
-│  │ 开始工作  │───▶│ 完成原子任务   │───▶│ vibe_checkpoint │         │
-│  │(读active) │    │  (单一变更)   │    │ git commit +   │         │
-│  └──────────┘    └──────────────┘    │ update docs    │         │
-│                                      └────────────────┘         │
-│                                             │                   │
-│                                             ▼                   │
-│                              ┌──────────────────────────┐       │
-│                              │  docs/vibe/              │       │
-│                              │  ├── sessions/<id>.md    │       │
-│                              │  ├── diffs/last.md      │       │
-│                              │  └── tasks/active.md    │       │
-│                              └──────────────────────────┘       │
-└─────────────────────────────────────────────────────────────────┘
-
-                        🧠 Skills 联动层
-┌──────────────────────────────────────────────────────────────────┐
-│  brainstorming ──▶ writing-plans ──▶ executing-plans             │
-│       │                  │                   │                   │
-│       ▼                  ▼                   ▼                   │
-│   确定方向         生成实现计划       分批执行 + checkpoint        │
-│                                      │                           │
-│                          ┌───────────┴───────────┐               │
-│                          ▼                       ▼               │
-│                   handoff              finishing-a-branch        │
-│                   会话交接              分支合并/PR/清理          │
-└──────────────────────────────────────────────────────────────────┘
-```
+- [快速开始](#快速开始)
+- [命令速查表](#命令速查表)
+- [场景1：新项目从零开始](#场景1新项目从零开始)
+- [场景2：功能分支开发](#场景2功能分支开发)
+- [场景3：识图 → 分析 → 写代码](#场景3识图--分析--写代码)
+- [场景4：会话交接](#场景4会话交接)
+- [场景5：发布 Release](#场景5发布-release)
+- [场景6：出错回滚 + 提交整理](#场景6出错回滚--提交整理)
+- [目录结构](#目录结构)
+- [上下文注入策略](#上下文注入策略)
+- [安装方式](#安装方式)
 
 ---
 
-## 🚀 快速开始
-
-### 1. 在项目中使用
+## 快速开始
 
 ```bash
-# 进入你的项目
-cd /path/to/your-project
+# 1. 安装扩展
+pi install git:github.com/meisijiya/Pi-VibeCodingExtension
 
-# 启动 pi（扩展已全局安装，自动加载）
+# 2. 在项目中初始化
+cd your-project
+pi
+/vibe-init       # 创建 docs/vibe/ 目录 + AGENTS.md 模板
+/vibe-enable     # 启用工作流
+
+# 3. 开始工作
+/vibe-task "实现用户登录页面"
+"帮我实现登录页面，每完成一个小任务调用 vibe_checkpoint"
+```
+
+---
+
+## 命令速查表
+
+### 🏗️ 基础工作流（日常使用）
+
+| 命令 | 用途 | 示例 |
+|------|------|------|
+| `/vibe-init` | 初始化项目（创建目录 + AGENTS.md 模板） | `/vibe-init` |
+| `/vibe-enable` | 启用工作流（开始上下文注入） | `/vibe-enable` |
+| `/vibe-disable` | 禁用工作流 | `/vibe-disable` |
+| `/vibe-task <name>` | 设置当前任务名 | `/vibe-task "实现登录验证"` |
+| `/vibe-checkpoint` | 提交变更 + 更新文档 | `/vibe-checkpoint` |
+| `/vibe-status` | 查看 session 状态 + 未提交文件 | `/vibe-status` |
+| `/vibe-handoff` | 生成交接文档 + 自动触发 /skill:handoff | `/vibe-handoff` |
+| `/vibe-context` | 预览注入给 LLM 的上下文 | `/vibe-context` |
+
+### 🔀 Git 工作流
+
+| 命令 | 用途 | 示例 |
+|------|------|------|
+| `/vibe-branch <name>` | 创建功能分支 + 新 session | `/vibe-branch feature-payment` |
+| `/vibe-merge` | 合并当前分支回主分支 | `/vibe-merge` |
+| `/vibe-squash [N]` | 压缩 N 个 checkpoint → 1 个 clean commit | `/vibe-squash 5` |
+| `/vibe-rollback [N]` | 回滚到指定 checkpoint（自动备份） | `/vibe-rollback 3` |
+| `/vibe-release <ver>` | 打 tag + 生成 changelog | `/vibe-release 1.2.0` |
+
+### 🤖 智能辅助
+
+| 命令 | 用途 | 示例 |
+|------|------|------|
+| `/vibe-plan` | 桥接 /skill:writing-plans 生成计划 | `/vibe-plan` |
+| `/vibe-metrics` | 工作流统计面板 | `/vibe-metrics` |
+| `/vibe-autocheckpoint` | 开启/关闭自动 checkpoint | `/vibe-autocheckpoint off` |
+
+### 🖼️ 多模态 + MiniMax
+
+| 命令 | 用途 | 示例 |
+|------|------|------|
+| `/vibe-mimo` | 切换到原生多模态模型（兜底） | `/vibe-mimo` → 贴图 → `/vibe-mimo --back` |
+| `/vibe-minimax` | MiniMax CLI 工具（识图/搜索/生成） | `/vibe-minimax setup` |
+
+| LLM 工具 | 触发方式 | 用途 |
+|----------|---------|------|
+| `vibe_checkpoint` | LLM 自动调用 | 完成任务后提交 |
+| `vibe_status` | LLM 自动调用 | 查询工作流状态 |
+| `minimax_describe_image` | LLM 自动调用 | 主力模型"看"图 |
+| `minimax_web_search` | LLM 自动调用 | 主力模型搜索网络 |
+| `minimax_generate` | LLM 自动调用 | 生成图片/视频/音频 |
+
+---
+
+## 场景1：新项目从零开始
+
+> **目标**：启动一个新项目，用 Vibe Workflow 管理整个开发过程。
+
+### 详细流程
+
+```bash
+# ═══ 第 1 步：初始化项目 ═══
+cd ~/projects/my-app
+git init
 pi
 
-# 初始化 vibe 工作流
+# 初始化 vibe 工作流（一次性）
 /vibe-init
+# → 创建 docs/vibe/sessions/、diffs/、tasks/
+# → 生成 AGENTS.md 模板（如果不存在）
 
-# 启用工作流
+# ═══ 第 2 步：编辑 AGENTS.md（项目宪法） ═══
+# 写下：
+#   - Task Boundaries（任务边界）
+#   - Constraints（项目约束）
+#   - Conventions（代码约定）
+#   - Current Focus（当前聚焦）
+
+# ═══ 第 3 步：启动工作流 ═══
 /vibe-enable
+# → 底部状态栏: vibe: 2026-05-25-1430
+# → LLM 自动获得 vibe 上下文注入
 
-# 设置当前任务
-/vibe-task "实现用户登录页面"
+# ═══ 第 4 步：开始开发 ═══
+/vibe-task "搭建项目框架"
+"初始化 React + TypeScript 项目，创建基础目录结构"
+# → LLM 读取 AGENTS.md 约束
+# → LLM 实现项目框架
+# → LLM 完成后自动调用 vibe_checkpoint
+# → git commit + diff 汇总 + session 更新
 
-# 告诉 AI 你的需求
-"帮我实现登录页面，完成一个任务后调用 vibe_checkpoint"
+# ═══ 第 5 步：确认 checkpoint ═══
+/vibe-status
+# → Session: 2026-05-25-1430
+# → Checkpoints: 1
+# → Current Task: 搭建项目框架
+# → Uncommitted: 0 files ✅
+
+# ═══ 第 6 步：继续下一个任务 ═══
+/vibe-task "实现首页路由"
+"实现路由配置，包含首页、登录页、404页面"
+# → 重复 第4-6 步
 ```
 
-### 2. AI 工作流程
+### 效果
 
 ```
-你: "实现登录页面的表单验证，完成后调用 vibe_checkpoint"
-
-AI: [读取 AGENTS.md、上次 diff、当前任务]
-    → [实现表单验证]
-    → [调用 vibe_checkpoint 工具]
-    → [git commit: "[实现用户登录页面] checkpoint #1: ..."]
-    → [更新 docs/vibe/diffs/last.md]
-    → [更新 docs/vibe/tasks/active.md]
-
-你: "很好，接下来实现密码强度检查"
-
-AI: [又读了一遍上下文，知道进度在哪]
-    → [实现密码强度检查]
-    → [vibe_checkpoint]
+AGENTS.md（约束）
+  ↓
+每个任务 → vibe_checkpoint → git commit
+  ↓                         ↓
+docs/vibe/tasks/active.md   docs/vibe/diffs/last.md
+（进度跟踪）                 （变更记录）
+  ↓
+下个任务开始 → LLM 自动读取上下文
+→ 永远知道「在做什么、改了什么、边界在哪」
 ```
 
-### 3. Session 之间交接
+---
+
+## 场景2：功能分支开发
+
+> **目标**：开发一个独立功能（支付模块），用分支隔离，完成后合并。
+
+### 详细流程
 
 ```bash
-# Session A 快结束时
-/vibe-handoff      # 生成结构化交接文档
-/skill:handoff     # 生成 LLM 视角的交接补充
+# ═══ 前置：当前在 main 分支，已完成一些基础功能 ═══
+/vibe-status
+# → Checkpoints: 5 · Task: 实现基础框架
 
-# --- 新 Session B ---
-/vibe-enable       # 启用工作流
-/vibe-task "继续实现用户注册"
-# AI 自动读取 AGENTS.md + last diff + active tasks
-# 无缝衔接，不需要重新描述！
+# ═══ 第 1 步：创建功能分支 ═══
+/vibe-branch feature-payment
+# → 🌿 创建并切换到 feature-payment
+# → 如有未提交变更，自动 checkpoint
+# → 新 session: 2026-05-25-1600
+# → 新 task: Feature: feature-payment
+
+# ═══ 第 2 步：在分支上开发 ═══
+/vibe-task "实现支付接口"
+"对接 Stripe API，实现 createPaymentIntent"
+
+# ... AI 开发 ...
+# vibe_checkpoint ← CP #1
+
+/vibe-task "实现支付回调"
+"实现 webhook 处理支付结果"
+
+# ... AI 开发 ...
+# vibe_checkpoint ← CP #2
+
+# ═══ 第 3 步：查看指标 ═══
+/vibe-metrics
+# → Checkpoints: 2
+# → LLM Turns: 8
+# → Turns/Checkpoint: 4.0 ✅ (理想范围 2-5)
+# → Avg files/checkpoint: 2.5
+
+# ═══ 第 4 步：查看进度 ═══
+/vibe-status
+# → Session: 2026-05-25-1600
+# → Checkpoints: 2
+# → Uncommitted: 0
+
+# ═══ 第 5 步：压缩提交（可选） ═══
+# 如果觉得 2 个 checkpoint 太碎，压缩为 1 个
+/vibe-squash 2
+# → ⚠️ 确认对话框
+# → ✅ 2 commits → 1 clean "[feature-payment] 2 checkpoints"
+
+# ═══ 第 6 步：合并回 main ═══
+/vibe-merge
+# → 自动检测 base: main
+# → ✅ merge: feature-payment → main
+# → 旧分支可手动删除: git branch -d feature-payment
+```
+
+### 分支策略
+
+```
+main ●──●──●──●────────────────● (merge)
+              \
+feature-payment ●──● (CP #1, #2)
+                     ↓ squash → ● (1 clean commit)
+                                  ↓ merge → main
 ```
 
 ---
 
-## 📂 目录结构
+## 场景3：识图 → 分析 → 写代码
+
+> **目标**：主力模型 DeepSeek（纯文本）自动"看"设计稿截图，分析问题并改代码。
+
+### 详细流程
+
+```bash
+# ═══ 前置：DeepSeek session，vibe 已启用 ═══
+/vibe-task "优化登录页面UI"
+/vibe-status
+# → Model: deepseek/deepseek-chat
+
+# ═══ 第 1 步：贴图（自动路由） ═══
+# Ctrl+V 粘贴登录页面的设计稿截图
+"根据这个设计稿，检查当前代码实现有什么问题"
+
+# 🆕 input hook 自动拦截！
+# → 📷 Image saved: assets/pasted/pasted-1712345678-0.png
+# → 消息改写为纯文本 + 工具提示
+# → DeepSeek 收到纯文本 ✅ 不会 400 报错！
+
+# ═══ 第 2 步：LLM 自动调用识图工具 ═══
+# DeepSeek 看到消息后自动决定:
+# → 调用 minimax_describe_image("assets/pasted/pasted-xxx.png")
+# → MiniMax CLI 返回: "这是一个登录表单，包含 email 输入框、
+#    密码输入框、登录按钮。按钮颜色为 #3366ff，圆角 4px..."
+
+# ═══ 第 3 步：LLM 对比代码 ═══
+# DeepSeek 读取 src/pages/Login.tsx
+# → 发现按钮颜色写的是 #333，与设计稿 #3366ff 不符
+# → 发现缺少"忘记密码"链接
+# → 修改代码
+
+# ═══ 第 4 步：提交 ═══
+# vibe_checkpoint ← 自动或手动触发
+# → Commit: "[优化登录页面UI] checkpoint #3: 2 file(s)"
+```
+
+### 自动路由原理
 
 ```
-project/
-├── AGENTS.md                          # 🏛️ 项目宪法（你用 /vibe-init 创建模板）
+用户 Ctrl+V 贴图
+       │
+       ▼
+┌──────────────────────────────────────────────┐
+│ input hook 拦截                               │
+│ 1. 检测模型: DeepSeek → 纯文本 → 不能收图片   │
+│ 2. 保存图片: assets/pasted/pasted-xxx.png     │
+│ 3. 改写消息: "[Image saved: path] use tool"   │
+└──────────────────┬───────────────────────────┘
+                   │ 纯文本消息
+                   ▼
+┌──────────────────────────────────────────────┐
+│ DeepSeek 收到纯文本                            │
+│ → 调用 minimax_describe_image(path)          │
+│    ↓                                          │
+│    minimax-cli describe xxx.png               │
+│    ↓                                          │
+│    返回: "This image shows..."                │
+│ → 基于描述分析问题、写代码                      │
+└──────────────────────────────────────────────┘
+```
+
+### 兜底方案：原生多模态
+
+```bash
+# 如果 MiniMax CLI 不可用，手动切换原生模型:
+/vibe-mimo
+# → 👁️ 切换到 claude-sonnet（或 minimax/mimo-v2.5）
+# → 上下文: 精简模式（仅任务描述，不浪费 token）
+
+Ctrl+V 贴图  "分析这个设计稿"
+# → Claude 直接"看"图，不需要 CLI
+
+/vibe-mimo --back
+# → 🔙 切回 DeepSeek
+# → Claude 的分析结果在消息历史中，DeepSeek 可见
+```
+
+---
+
+## 场景4：会话交接
+
+> **目标**：当前 session 快结束了，把进度完整交给下一个 session。
+
+### 详细流程
+
+```bash
+# ═══ Session A 结束前 ═══
+/vibe-status
+# → Session: 2026-05-25-1430 · Checkpoints: 3
+# → Current Task: 实现登录页面（未完成）
+# → Uncommitted: auth.ts
+
+# ═══ 第 1 步：提交残留变更 ═══
+/vibe-checkpoint
+# → ✅ Checkpoint #4: auth.ts
+
+# ═══ 第 2 步：生成交接文档 ═══
+/vibe-handoff
+# → 📦 数据交接: docs/vibe/sessions/handoff-2026-05-25-1430.md
+#    ├─ Checkpoint 表格
+#    ├─ 下一步任务
+#    ├─ AGENTS.md 关键约束
+#    └─ 建议的 Skills
+# → 🧠 自动排队 /skill:handoff（LLM 语义化补充）
+
+# ═══ 第 3 步：退出 ═══
+# Ctrl+C 退出
+
+# ════════════════════════════════════════════
+# ═══ Session B（新 session） ═══
+# ════════════════════════════════════════════
+
+pi
+/vibe-enable
+# → 🚀 Vibe 工作流已启用
+# → LLM 自动读取:
+#     ├─ AGENTS.md（项目约束）
+#     ├─ docs/vibe/diffs/last.md（上次变更）
+#     ├─ docs/vibe/tasks/active.md（任务进度）
+#     └─ docs/vibe/sessions/handoff-xxx.md（交接文档）
+
+/vibe-task "继续实现登录页面"
+# → LLM 无缝衔接，无需重新描述！
+
+"继续完成上次未完成的登录页面表单验证"
+# → LLM 已有完整上下文，直接开始工作
+```
+
+### 交接机制
+
+```
+Session A 结束
+  │
+  ├─ git commit 历史（所有变更可追溯）
+  ├─ docs/vibe/sessions/<id>.md（Session 完整记录）
+  ├─ docs/vibe/diffs/last.md（最后 diff 汇总）
+  └─ docs/vibe/tasks/active.md（任务进度 + 下一步）
+
+Session B 开始
+  │
+  ├─ /vibe-enable
+  ├─ before_agent_start 注入上下文
+  │   ├─ AGENTS.md 约束
+  │   ├─ 当前任务状态
+  │   └─ 文档路径引用
+  └─ LLM 知道一切 → 无缝衔接
+```
+
+---
+
+## 场景5：发布 Release
+
+> **目标**：功能开发完成，打 tag 发布。
+
+### 详细流程
+
+```bash
+# ═══ 第 1 步：确认全部完成 ═══
+/vibe-status
+# → Checkpoints: 8
+# → Uncommitted: 0 ✅
+
+/vibe-metrics
+# → Turns/Checkpoint: 3.5 ✅
+# → Total files: 15
+
+# ═══ 第 2 步：发布 ═══
+/vibe-release 1.0.0
+# → 确认: 如有未提交变更，自动 checkpoint
+# → 📄 生成 docs/vibe/release-1.0.0.md
+#    ├─ Changes 列表（从 checkpoint 记录生成）
+#    └─ Session 元数据
+# → 🏷️  git tag -a v1.0.0
+
+# ═══ 第 3 步：推送 ═══
+git push origin main --tags
+```
+
+---
+
+## 场景6：出错回滚 + 提交整理
+
+> **目标**：发现第 3 个 checkpoint 引入了 bug，回滚 + 重新开发。
+
+### 详细流程
+
+```bash
+# ═══ 第 1 步：确认要回滚的 checkpoint ═══
+/vibe-status
+# → Checkpoints: 5
+# → #3 引入了一个难以修复的 bug
+
+# ═══ 第 2 步：安全回滚 ═══
+/vibe-rollback 3
+# → 列出 checkpoint 供确认
+# → ⚠️ 确认对话框
+# → 自动创建备份分支: vibe-backup-2026-05-25-xxx
+# → ✅ 回滚到 CP #3（revert 方式，保留历史）
+
+# ═══ 第 3 步：重新开发（可选） ═══
+/vibe-task "修复登录逻辑（重新实现）"
+# ... 重新开发 ...
+
+# ═══ 第 4 步：整理提交历史（可选） ═══
+# 如果觉得 commit 太碎，压缩整理:
+/vibe-squash 4
+# → 列出最近 4 个 checkpoint
+# → ⚠️ 确认对话框（不可逆操作！）
+# → ✅ 4 commits → 1 clean commit
+```
+
+### 安全机制
+
+```
+每个回滚操作自动创建备份分支:
+  vibe-backup-<session-id>-<timestamp>
+  → 即使回滚错了，也能从备份恢复
+
+Squash 前必须确认:
+  → 显示将被压缩的 commit 列表
+  → 确认后执行 soft reset + recommit
+  → 工作区文件不受影响
+```
+
+---
+
+## 目录结构
+
+```
+your-project/
+│
+├── AGENTS.md                    # 🏛️ 项目宪法（你编辑）
+│   ├── Task Boundaries          #   任务边界（防需求膨胀）
+│   ├── Constraints              #   项目约束（代码、文件、操作）
+│   ├── Conventions              #   代码约定（风格、测试、文档）
+│   └── Current Focus            #   当前聚焦任务
+│
 ├── docs/
-│   ├── vibe/                          # ⚡ Vibe Workflow 自动维护
-│   │   ├── sessions/
-│   │   │   ├── .gitkeep
-│   │   │   ├── 2026-05-24-1430.md     # 每个 session 的记录
-│   │   │   └── handoff-2026-05-24-1430.md  # 交接文档
+│   ├── vibe/                    # ⚡ 自动维护（不用手动编辑）
+│   │   ├── sessions/            #   每次 session 的记录
+│   │   │   ├── 2026-05-25-1430.md
+│   │   │   └── handoff-2026-05-25-1430.md
 │   │   ├── diffs/
-│   │   │   └── last.md                # 最近变更 diff 汇总
-│   │   └── tasks/
-│   │       └── active.md              # 当前活动任务列表
-│   ├── superpowers/
-│   │   └── plans/                     # writing-plans 技能输出
-│   ├── adr/                           # 架构决策记录
-│   └── prd/                           # PRD 文档
+│   │   │   ├── last.md          #   最近变更汇总
+│   │   │   └── by-file/         #   每个文件的独立变更历史
+│   │   │       ├── INDEX.md
+│   │   │       ├── Login_tsx.md
+│   │   │       └── auth_ts.md
+│   │   ├── tasks/
+│   │   │   └── active.md        #   当前任务 + 进度
+│   │   └── release-1.0.0.md     #   Release changelog
+│   └── superpowers/
+│       └── plans/               #   writing-plans 技能输出
+│
+├── assets/
+│   ├── pasted/                  #   Ctrl+V 贴图自动保存
+│   └── generated/               #   MiniMax 生成素材
+│
 └── .pi/
-    └── settings.json                  # pi 项目配置
+    └── settings.json
 ```
 
 ---
 
-## 🔧 命令详解
+## 上下文注入策略
 
-### `/vibe-init`
-初始化项目的 vibe 工作流。创建目录结构和 AGENTS.md 模板。
+### 三级注入（Token 最优）
 
-### `/vibe-enable` / `/vibe-disable`
-启用/禁用 vibe 工作流。启用后：
-- ✅ 每次对话注入工作流上下文
-- ✅ LLM 可以调用 `vibe_checkpoint` 和 `vibe_status` 工具
-- ✅ 底部状态栏显示 session 信息
-
-### `/vibe-task <任务名>`
-设置当前任务。影响：
-- 注入上下文中的"当前任务"显示
-- git commit 消息前缀
-- session doc 记录
-
-### `/vibe-checkpoint`
-手动执行 checkpoint（= git commit + 更新文档）。  
-LLM 也可以调用 `vibe_checkpoint` 工具达到相同效果。
-
-### `/vibe-status`
-查看当前工作流状态：启用状态、session ID、checkpoint 数、未提交变更等。
-
-### `/vibe-handoff`
-生成完整交接文档。包含：
-- Session 摘要
-- 所有 checkpoint 表格
-- 下一步任务
-- AGENTS.md 关键约束
-- 建议的 skill 使用顺序
-
-### `/vibe-context`
-预览会注入到每次对话的上下文内容（调试用）。
-
-### `/vibe-plan` 🆕 v2
-桥接 `/skill:writing-plans`：自动将当前任务名、session 状态、已完成 checkpoint 数作为上下文传给 writing-plans skill，生成实现计划。
-
-### `/vibe-metrics` 🆕 v2
-显示工作流统计面板：
-- Checkpoint 频率（Turns/Checkpoint，理想值 2-5）
-- 每个 checkpoint 的文件变更数
-- Session 内的 LLM turn 数和工具调用数
-- 平均文件变更数
-
-### `/vibe-autocheckpoint [on|off]` 🆕 v2
-切换自动 checkpoint 建议。开启时（默认）：当 LLM 说 "done"/"complete"等完成信号时，自动在状态栏提示 checkpoint。关闭：仅手动触发。
+```
+┌─────────────────────────────────────────────────────────┐
+│ 主力模型（DeepSeek、Claude、GPT）                         │
+│ ┌───────────────────────────────────────────────────┐   │
+│ │ Full Vibe Context (~300 tokens)                    │   │
+│ │ • Session · Checkpoints                           │   │
+│ │ • Current Task                                    │   │
+│ │ • Uncommitted files                               │   │
+│ │ • Reference docs paths                            │   │
+│ │ • Rules (checkpoint, comments, scope)             │   │
+│ └───────────────────────────────────────────────────┘   │
+│ 仅在状态变化时注入 · 缓存命中率 97%                         │
+├─────────────────────────────────────────────────────────┤
+│ 工具模型（Mimo、Vision）                                  │
+│ ┌───────────────────────────────────────────────────┐   │
+│ │ Minimal Context (~50 tokens)                       │   │
+│ │ • Current Task only                               │   │
+│ │ • "Focus on immediate request"                    │   │
+│ └───────────────────────────────────────────────────┘   │
+│ 节省 ~250 tokens/次                                     │
+├─────────────────────────────────────────────────────────┤
+│ 外部 CLI（minimax-cli）                                  │
+│ ┌───────────────────────────────────────────────────┐   │
+│ │ Zero Context                                      │   │
+│ │ 纯 shell 命令，不经过 LLM                          │   │
+│ └───────────────────────────────────────────────────┘   │
+│ 节省 ~300 tokens/次                                     │
+└─────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 🤝 与现有 Skills 联动
+## 安装方式
 
-### 完整开发流程
+```bash
+# 方式 1: GitHub（推荐）
+pi install git:github.com/meisijiya/Pi-VibeCodingExtension
 
-```
-第 1 步: /skill:brainstorming
-  └─ 头脑风暴，确定需求和方向
+# 方式 2: npm（需要先 publish）
+pi install npm:pi-vibe-workflow
 
-第 2 步: /skill:writing-plans
-  └─ 生成实现计划 → docs/superpowers/plans/YYYY-MM-DD-feature.md
+# 方式 3: 本地路径
+pi install /path/to/pi-vibe-workflow
 
-第 3 步: /vibe-task "实现 {feature-name}"
-  └─ 设置当前任务名称
+# 查看已安装
+pi list
 
-第 4 步: /skill:executing-plans
-  └─ 按计划分批执行
-     ├─ 每批完成 → 由 AI 调用 vibe_checkpoint
-     ├─ 自动 git commit + 更新 session doc
-     └─ 批次间用户 review
-
-第 5 步: /vibe-handoff
-  └─ 生成结构化交接文档
-
-第 6 步: /skill:finishing-a-development-branch
-  └─ 选择合并/PR/保留分支的完成方式
+# 更新
+pi update --extensions
 ```
 
-### 技能矩阵
+### 前置依赖
 
-| 技能 | 来源 | 触发时机 | vibe-workflow 如何配合 |
-|------|------|---------|----------------------|
-| `brainstorming` | superpowers + 已有 | 开始任何创意工作 | AGENTS.md 中提醒先 brainstorming |
-| `writing-plans` | superpowers | 有 spec 需要计划 | 计划存入后，vibe 的 checkpoint 跟踪执行进度 |
-| `executing-plans` | superpowers + 已有 | 有实现计划要执行 | 每个 batch 完成 = 一个 vibe_checkpoint |
-| `handoff` | 已有 | 会话结束/切换 | vibe-handoff 生成数据视角，handoff 生成 LLM 视角 |
-| `to-prd` | 已有 | 需要创建 PRD | PRD 归档后，vibe 链接到 session doc |
-| `finishing-a-development-branch` | superpowers | 开发完成 | vibe-handoff 的输出为分支完成决策提供上下文 |
-| `verification-before-completion` | superpowers + 已有 | 声称完成前 | vibe_checkpoint 前自动验证 |
+- [pi](https://pi.dev) — 终端 AI 编程工具
+- Git — 版本控制（checkpoint 功能需要）
+- 可选：[MiniMax CLI](https://platform.minimaxi.com/docs/token-plan/minimax-cli) — 多模态能力
+
+### 推荐配套 Skills
+
+```bash
+# 安装 superpowers skills（提供 brainstorming、writing-plans 等）
+git clone https://github.com/obra/superpowers.git /tmp/sp
+cp -r /tmp/sp/skills/* ~/.agents/skills/
+```
 
 ---
 
-## 🎯 为什么可以「很久不用压缩上下文」？
+## 扩展规模
 
-### 传统方式 vs Vibe Workflow
+| 版本 | 核心能力 | 规模 |
+|------|---------|------|
+| v1.0 | 基础工作流（init/enable/task/checkpoint） | 1429 行 |
+| v2.0 | 文件追踪 + 指标 + 自动建议 | 1786 行 |
+| v3.0 | Per-file diff + 智能 auto-checkpoint | 1950 行 |
+| v4.0 | Squash/Rollback/Branch/Merge/Release | 2548 行 |
+| v5.0 | 模型感知上下文 + 多模态切换 | 2849 行 |
+| **v5.1** | **图片自动路由 + MiniMax CLI 工具** | **3155 行** |
 
-```
-传统方式:
-Session 长 ──▶ 上下文膨胀 ──▶ 压缩 ──▶ 信息丢失 ──▶ 新 session 重新描述
-
-Vibe Workflow 方式:
-Session 短 ──▶ checkpoint 后关闭 ──▶ 新 session 自动读取
-                │                          │
-                ├─ git 有 commit 历史       ├─ AGENTS.md 约束
-                ├─ diffs/last.md 变更记录   ├─ tasks/active.md 进度
-                └─ sessions/<id>.md 详细记录 └─ 上次的 handoff 文档
-                
-→ LLM 始终知道「在做什么」「改了什么」「什么是边界」
-→ 不需要把所有历史都塞进上下文
-→ context 始终保持精简，远离压缩阈值
-```
-
-### 🧠 Anthropic Cache 优化策略
-
-这是一个关键设计决策——系统提示缓存 vs 消息缓存：
-
-```
-❌ 方案A: systemPrompt 注入
-   [System Prompt + vibe_context]  ← 前缀变了！
-   [msg1]                           ← cache MISS  💸
-   [msg2]                           ← cache MISS  💸
-   → 全部缓存失效，每次 turn 重新计算全部 token
-
-✅ 方案B: message 注入（本扩展采用）
-   [System Prompt]                  ← cache HIT  ✅
-   [msg1]                           ← cache HIT  ✅
-   [msg2]                           ← cache HIT  ✅
-   [vibe context msg]               ← only this is new
-   → 99% 缓存命中，仅 ~200 tokens 重新计算
-
-➕ 去重优化: 只在状态变化时注入
-   Turn 1: [vibe context] ← 新任务，注入
-   Turn 2: (no injection) ← 状态未变，跳过
-   Turn 3: (no injection) ← 跳过
-   Turn 4: [vibe context] ← checkpoint 完成，状态变了，注入
-   → 避免了 75% 的重复注入，上下文永不膨胀
-```
-
-**缓存命中率对比：**
-
-| 场景 | systemPrompt 注入 | message 注入（去重） |
-|------|-------------------|---------------------|
-| 首个 turn | 0% (全 miss) | ~95% (仅最后一条 miss) |
-| 后续 turn (状态不变) | 0% | ~100% (零注入) |
-| 后续 turn (状态变化) | 0% | ~95% |
-| **平均** | **~0%** 💸💸💸 | **~97%** ✅✅✅ |
-
----
-
-## ⚙️ 高级配置
-
-### 自定义 vibe 目录
-
-在 `.pi/settings.json` 中：
-
-```json
-{
-  "extensions": [
-    "~/.pi/agent/extensions/vibe-workflow.ts"
-  ]
-}
-```
-
-### 禁用自动上下文注入
-
-如果你只想用 checkpoint/commit 功能，不需要上下文注入：
-
-直接在对话中不运行 `/vibe-enable`，手动使用 `/vibe-checkpoint` 命令。
-
-### 与其他 git 工具配合
-
-vibe-workflow 只做 `git add -A` + `git commit` + `--no-verify`。它不会：
-- 推送（push）
-- 创建分支
-- 修改 remote
-
-这些操作由你或 `finishing-a-development-branch` 技能控制。
-
----
-
-## 📊 效果对比
-
-| 指标 | 无工作流 | 使用 Vibe Workflow |
-|------|---------|-------------------|
-| 上下文利用率 | ~40%（大量历史废话） | ~80%（只含当前任务信息） |
-| 新 session 启动时间 | 5-10 分钟（重新描述） | <1 分钟（自动读取） |
-| 需求膨胀率 | 高（AI 改无关代码） | 低（AGENTS.md 约束） |
-| 可追溯性 | 差（无 commit 或混乱 commit） | 好（每个 checkpoint 一次 commit） |
-| 回滚难度 | 高（不知道改了啥） | 低（git log 清晰） |
-| Skill 联动 | 手动切换 | 自动化流程 |
-
----
-
-> 💡 **一句话**: 这不是为了约束大模型，而是为了让大模型更聪明地工作——给它恰好需要的信息，不多不少。
-
----
-
-## 📊 上下文体积对比
-
-```
-无工作流:
-  system prompt: 10K tokens
-  + 20 turns × 2K avg = 40K tokens
-  + vibe overhead: 0
-  = 50K tokens (and LLM doesn't know project state)
-
-Vibe Workflow（优化后）:
-  system prompt: 10K tokens (pi built-in + AGENTS.md)
-  + 20 turns × 2K avg = 40K tokens
-  + vibe injection: 0.2K × ~5 state changes = 1K tokens
-  = 51K tokens (and LLM has full project context!) 
-  
-  → 仅多 1K tokens，换来完整的进度追踪 + 约束注入 + Skills 联动
-```
+> 10 hooks · 18 commands · 5 LLM tools · 全覆盖的 Vibe Coding 工作流
 
 ---
 
