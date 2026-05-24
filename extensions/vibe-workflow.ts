@@ -1690,14 +1690,18 @@ export default function (pi: ExtensionAPI) {
   });
 
   /**
-   * /vibe-status — 显示当前工作流状态
+   * /vibe-status — 显示当前工作流状态（含上下文用量监控）
    */
   pi.registerCommand("vibe-status", {
-    description: "显示 Vibe 工作流当前状态",
+    description: "显示 Vibe 工作流当前状态（含上下文用量、压缩建议）",
     handler: async (_args, ctx) => {
       const isGit = isGitRepo(state.projectRoot);
       const changedFiles = isGit ? getChangedFiles(ctx.cwd) : [];
       const doc = await loadSessionDoc(state.projectRoot, state);
+
+      // v5.2: 上下文用量监控
+      const usage = ctx.getContextUsage();
+      const contextTokens = usage?.tokens ?? null;
 
       const lines: string[] = [];
       lines.push("## 🎯 Vibe Workflow Status");
@@ -1717,7 +1721,48 @@ export default function (pi: ExtensionAPI) {
         `| Uncommitted | ${changedFiles.length} file(s) |`,
       );
       lines.push(`| Session Status | ${doc.status} |`);
+
+      // 上下文用量（带预警）
+      if (contextTokens !== null) {
+        const model = ctx.model;
+        const maxTokens = model?.contextWindow || 200000;
+        const pct = ((contextTokens / maxTokens) * 100).toFixed(1);
+        const icon = Number(pct) > 80
+          ? "🔴"
+          : Number(pct) > 60
+          ? "🟡"
+          : "🟢";
+        lines.push(
+          `| Context Usage | ${icon} ${contextTokens.toLocaleString()} / ${maxTokens.toLocaleString()} (${pct}%) |`,
+        );
+      }
       lines.push("");
+
+      // 压缩建议
+      if (contextTokens !== null) {
+        const model = ctx.model;
+        const maxTokens = model?.contextWindow || 200000;
+        const pct = (contextTokens / maxTokens) * 100;
+        if (pct > 80) {
+          lines.push(
+            "### ⚠️ 上下文用量高",
+          );
+          lines.push(
+            `当前用量 ${pct.toFixed(1)}%，建议:`,
+          );
+          lines.push("- 运行 `/vibe-handoff` 生成交接文档后 `/new` 开新 session");
+          lines.push("- 或运行 `/compact` 手动压缩上下文");
+          lines.push(
+            "- pi 的自动压缩默认开启，接近阈值时会自动触发",
+          );
+          lines.push("");
+        } else if (pct > 60) {
+          lines.push(
+            `💡 上下文用量 ${pct.toFixed(1)}%，可以考虑完成当前任务后交接新 session`,
+          );
+          lines.push("");
+        }
+      }
 
       if (changedFiles.length > 0) {
         lines.push("### 📝 未提交的变更");
