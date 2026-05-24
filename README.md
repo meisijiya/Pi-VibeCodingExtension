@@ -18,6 +18,10 @@
 
 - [快速开始](#快速开始)
 - [命令速查表](#命令速查表)
+- [配置指南](#配置指南)
+  - [MiniMax CLI（识图/搜索/生成）](#配置-minimax-cli识图--搜索--生成)
+  - [Mimo 多模态模型（兜底方案）](#配置-mimo-多模态模型兜底方案)
+  - [配置检查清单](#配置检查清单)
 - [场景1：新项目从零开始](#场景1新项目从零开始)
 - [场景2：功能分支开发](#场景2功能分支开发)
 - [场景3：识图 → 分析 → 写代码](#场景3识图--分析--写代码)
@@ -559,7 +563,76 @@ pi update --extensions
 
 - [pi](https://pi.dev) — 终端 AI 编程工具
 - Git — 版本控制（checkpoint 功能需要）
-- 可选：[MiniMax CLI](https://platform.minimaxi.com/docs/token-plan/minimax-cli) — 多模态能力
+
+---
+
+## 配置指南
+
+### 配置 MiniMax CLI（识图 / 搜索 / 生成）
+
+> MiniMax CLI 是扩展的「手脚」——主力模型通过调用 CLI 工具间接获得多模态能力。
+
+**第 1 步：安装**
+
+```bash
+# 参考官方文档安装 minimax-cli
+# https://platform.minimaxi.com/docs/token-plan/minimax-cli
+
+# 安装后验证:
+minimax-cli --version
+```
+
+**第 2 步：登录**
+
+```bash
+# 登录你的 MiniMax Token Plan 账号
+minimax-cli login
+
+# 验证登录状态:
+minimax-cli whoami
+```
+
+**第 3 步：在 pi 中验证**
+
+```bash
+pi
+/vibe-minimax setup
+# → ✅ MiniMax CLI 可用
+```
+
+> 💡 **不需要在 pi 中单独配置 API Key**。CLI 工具自己管理认证，扩展通过 `pi.exec("minimax-cli", ...)` 调用，与你的终端环境一致。
+
+### 配置 Mimo 多模态模型（兜底方案）
+
+> Mimo 是原生多模态模型，在 MiniMax CLI 不可用时作为兜底。
+
+**你已经在 pi 中连接了 Mimo（如通过 opencode-go provider），不需要额外配置。**
+
+```bash
+# 验证 Mimo 可被发现:
+pi
+/vibe-mimo
+# → 👁️ 自动搜索所有 provider 中的多模态模型
+# → 应找到你的 Mimo 模型（如 opencode-go/minimax-mimo-v2.5）
+
+# 如果自动检测失败，手动指定:
+/vibe-mimo --model opencode-go/minimax-mimo-v2.5
+
+# 使用完切回主力模型:
+/vibe-mimo --back
+```
+
+> 💡 **如果你在其他 provider 下有 Mimo**（如直接注册了 MiniMax provider），自动检测同样能找到——扩展搜索**所有**已注册 provider 中的多模态模型。
+
+### 配置检查清单
+
+| 功能 | 需要配置 | 如何验证 |
+|------|---------|---------|
+| 基础工作流 | 无（开箱即用） | `/vibe-enable` |
+| Git checkpoint | Git 已安装 | `/vibe-status` |
+| MiniMax 识图/搜索/生成 | 安装 + 登录 minimax-cli | `/vibe-minimax setup` |
+| Mimo 原生多模态 | provider 已连接（如 opencode-go） | `/vibe-mimo` |
+| Skills 联动 | 安装 superpowers skills | `/skill:writing-plans` |
 
 ### 推荐配套 Skills
 
