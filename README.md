@@ -28,6 +28,7 @@
 - [场景4：会话交接](#场景4会话交接)
 - [场景5：发布 Release](#场景5发布-release)
 - [场景6：出错回滚 + 提交整理](#场景6出错回滚--提交整理)
+- [Skills 参考](#skills-参考)
 - [目录结构](#目录结构)
 - [上下文注入策略](#上下文注入策略)
 - [安装方式](#安装方式)
@@ -647,12 +648,50 @@ pi
 | Mimo 原生多模态 | provider 已连接（如 opencode-go） | `/vibe-mimo` |
 | Skills 联动 | 安装 superpowers skills | `/skill:writing-plans` |
 
-### 推荐配套 Skills
+---
+
+## Skills 参考
+
+本扩展与以下 skills 联动，按集成深度分为三级：
+
+### 🔗 桥接集成（扩展自动触发）
+
+| Skill | 触发方式 | 场景 |
+|-------|---------|------|
+| `handoff` | `/vibe-handoff` 自动排队 `/skill:handoff` | 生成 LLM 视角的语义化交接补充 |
+| `writing-plans` | `/vibe-plan` 自动排队 `/skill:writing-plans` | 传入当前任务上下文，生成 bite-sized 实现计划 |
+
+### 💡 上下文推荐（注入时提醒 LLM）
+
+| Skill | 何时推荐 | 场景 |
+|-------|---------|------|
+| `brainstorming` | 开始新功能前 | 头脑风暴，确定需求方向 |
+| `executing-plans` | 有计划文件时 | 分批执行计划，每批结束触发 vibe_checkpoint |
+
+### 📋 协作配合（文档引用 + AGENTS.md 推荐）
+
+| Skill | 用途 | 与 vibe 工作流的关系 |
+|-------|------|---------------------|
+| `finishing-a-development-branch` | 分支完成（合并/PR/丢弃） | vibe-handoff 输出为分支完成决策提供上下文 |
+| `verification-before-completion` | 完成前验证 | vibe_checkpoint 前的质量门 |
+| `test-driven-development` | TDD 开发流程 | 每个 checkpoint 前确保测试通过 |
+| `systematic-debugging` | 系统化调试 | 发现 bug 后回滚 + 重新开发的标准流程 |
+| `subagent-driven-development` | 子 Agent 并行执行 | 大量独立任务时分派，完成后各自由 vibe_checkpoint 收尾 |
+| `using-git-worktrees` | Git worktree 隔离开发 | 配合 `/vibe-branch` 创建完全隔离的工作空间 |
+| `using-superpowers` | 引导 LLM 自动发现 skill | 确保 LLM 在需要时主动调用上述 skills |
+
+> 💡 **MiniMax 功能不需要额外 skill**。识图、搜索、生成已通过 `minimax_describe_image`、`minimax_web_search`、`minimax_generate` 三个 LLM 工具封装在扩展内部，开箱即用。
+
+### 快速安装所有 Skills
 
 ```bash
-# 安装 superpowers skills（提供 brainstorming、writing-plans 等）
-git clone https://github.com/obra/superpowers.git /tmp/sp
+# 安装 superpowers skills
+git clone --depth 1 --filter=blob:none https://github.com/obra/superpowers.git /tmp/sp
 cp -r /tmp/sp/skills/* ~/.agents/skills/
+rm -rf /tmp/sp
+
+# 验证
+ls ~/.agents/skills/
 ```
 
 ---
