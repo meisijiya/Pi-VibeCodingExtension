@@ -2672,9 +2672,10 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      // 自动查找: 优先 MiniMax Mimo
+      // 自动查找: 搜索所有 provider 中的多模态模型
       if (!visionModel) {
-        for (const provider of ["minimax", "google", "anthropic", "openai"]) {
+        const allProviders = ctx.modelRegistry.list();
+        for (const provider of allProviders || []) {
           const models = ctx.modelRegistry.list(provider);
           if (models) {
             visionModel = models.find(
