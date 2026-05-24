@@ -37,7 +37,7 @@
  *   vibe_status           — LLM 查询当前工作流状态
  *
  * @author pi + ljh2923
- * @version 5.0.0
+ * @version 5.1.0
  */
 
 // =============================================================================
@@ -1233,6 +1233,96 @@ export default function (pi: ExtensionAPI) {
     } catch {
       // 静默失败
     }
+  });
+
+  // --- 5.2.0 v5.1: 图片自动路由（input hook） ---
+
+  /**
+   * input hook: 拦截用户粘贴的图片，防止发送给不支持多模态的主力模型。
+   *
+   * 工作流程:
+   *   1. 用户 Ctrl+V 贴图 → event.images 中有图片数据
+   *   2. 主力模型（DeepSeek）不支持图片 → 直接发送会 400 报错
+   *   3. 此 hook 拦截图片，保存到 assets/pasted/，改写消息为纯文本
+   *   4. LLM 收到文本消息 "[Image saved: path]" → 调用 minimax_describe_image 工具
+   *
+   * 注意:
+   *   — 多模态模型（Mimo）不需要拦截，原生支持图片
+   *   — 仅在主力模型时生效
+   */
+  pi.on("input", async (event, ctx) => {
+    if (!state.enabled) return { action: "continue" };
+
+    const images = event.images;
+    if (!images || images.length === 0) return { action: "continue" };
+
+    // 检查当前模型是否支持多模态（如果是多模态模型，不需要拦截）
+    const mode = getInjectionMode(ctx);
+    if (mode === "minimal") {
+      // 当前已是多模态/工具模型（如 Mimo），原生支持图片
+      return { action: "continue" };
+    }
+
+    // 主力模型不支持图片 → 拦截保存
+    const pasteDir = path.join(
+      state.projectRoot || ctx.cwd,
+      "assets",
+      "pasted",
+    );
+    await ensureDir(pasteDir);
+
+    const savedPaths: string[] = [];
+    for (let i = 0; i < images.length; i++) {
+      const img = images[i];
+      const timestamp = Date.now();
+      const ext = img.mediaType?.includes("png")
+        ? "png"
+        : img.mediaType?.includes("jpeg") || img.mediaType?.includes("jpg")
+        ? "jpg"
+        : img.mediaType?.includes("gif")
+        ? "gif"
+        : img.mediaType?.includes("webp")
+        ? "webp"
+        : "png";
+      const filename = `pasted-${timestamp}-${i}.${ext}`;
+      const filepath = path.join(pasteDir, filename);
+
+      try {
+        if (img.data) {
+          await fsPromises.writeFile(
+            filepath,
+            Buffer.from(img.data, "base64"),
+          );
+          savedPaths.push(filepath);
+        }
+      } catch {
+        // 保存失败，跳过
+      }
+    }
+
+    if (savedPaths.length === 0) return { action: "continue" };
+
+    // 改写用户消息：移除图片，添加文本提示
+    const imageRefs = savedPaths
+      .map((p) => `\`${path.relative(state.projectRoot || ctx.cwd, p)}\``)
+      .join(", ");
+
+    const newText = [
+      `[📷 ${savedPaths.length} image(s) saved: ${imageRefs}]`,
+      "",
+      event.text || "",
+      "",
+      `_Use the \`minimax_describe_image\` tool to analyze the image(s)._`,
+    ].join("\n");
+
+    if (ctx.hasUI) {
+      ctx.ui.notify(
+        `📷 ${savedPaths.length} image(s) saved → use minimax_describe_image to analyze`,
+        "info",
+      );
+    }
+
+    return { action: "transform", text: newText };
   });
 
   // --- 5.2.1 v2: 文件变更追踪（tool_result hook） ---
@@ -2842,7 +2932,223 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // --- 5.5 初始化日志 ---
+  // --- 5.4.1 v5.1: MiniMax CLI 工具（LLM 可调用） ---
+
+  /**
+   * minimax_describe_image — 通过 MiniMax CLI 描述图片内容。
+   * 主力模型（DeepSeek）不支持图片，需要用此工具间接"看"图。
+   */
+  pi.registerTool({
+    name: "minimax_describe_image",
+    label: "MiniMax Describe Image",
+    description:
+      "通过 MiniMax CLI 分析图片内容。用于主力模型（DeepSeek 等）间接识别图片。" +
+      " 接收图片文件路径，返回图片的描述文本。当用户贴图后被 input hook 保存到 assets/pasted/，" +
+      " 或者需要分析项目中的截图/设计稿时调用此工具。",
+    promptSnippet: "Analyze image content via MiniMax CLI",
+    promptGuidelines: [
+      "Use minimax_describe_image when the user pastes an image and you need to understand its content.",
+      "Use minimax_describe_image to analyze screenshots, UI designs, or error messages in images.",
+      "Call this tool with the exact file path saved by the image paste hook (assets/pasted/...).",
+    ],
+    parameters: Type.Object({
+      imagePath: Type.String({
+        description:
+          "图片文件的绝对或相对路径（如 assets/pasted/pasted-xxx.png）",
+      }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const imagePath = params.imagePath;
+      const absolutePath = path.isAbsolute(imagePath)
+        ? imagePath
+        : path.join(ctx.cwd, imagePath);
+
+      // 检查文件是否存在
+      try {
+        await fsPromises.access(absolutePath);
+      } catch {
+        return {
+          content: [
+            {
+              type: "text",
+              text: `❌ Image not found: ${absolutePath}. Check the path and try again.`,
+            },
+          ],
+        };
+      }
+
+      // 调用 MiniMax CLI 描述图片
+      const result = await pi.exec(
+        "minimax-cli",
+        ["describe", absolutePath],
+        { timeout: 30_000 },
+      );
+
+      if (result.code !== 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `❌ MiniMax CLI failed to describe image:\n` +
+                `${result.stderr || result.stdout || "unknown error"}\n\n` +
+                `Make sure minimax-cli is installed and configured.\n` +
+                `Docs: https://platform.minimaxi.com/docs/token-plan/minimax-cli`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `## Image Description (via MiniMax CLI)\n\n` +
+              `**File**: \`${imagePath}\`\n\n` +
+              (result.stdout || "No description returned"),
+          },
+        ],
+        details: { imagePath, success: true },
+      };
+    },
+  });
+
+  /**
+   * minimax_web_search — 通过 MiniMax CLI 进行网络搜索。
+   * 主力模型需要查网络信息时调用此工具。
+   */
+  pi.registerTool({
+    name: "minimax_web_search",
+    label: "MiniMax Web Search",
+    description:
+      "通过 MiniMax CLI 进行网络搜索，返回搜索结果摘要。" +
+      " 当需要查询最新信息、文档、API 用法或任何网络资源时使用。",
+    promptSnippet: "Search the web via MiniMax CLI",
+    promptGuidelines: [
+      "Use minimax_web_search when you need up-to-date information, documentation lookups, or web research.",
+      "Use minimax_web_search to find API references, error solutions, or latest news.",
+      "Prefer this over guessing or using potentially outdated training data.",
+    ],
+    parameters: Type.Object({
+      query: Type.String({
+        description: "搜索查询字符串",
+      }),
+      maxResults: Type.Optional(
+        Type.Number({
+          description: "最大返回结果数（默认 5）",
+        }),
+      ),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
+      const maxResults = params.maxResults || 5;
+
+      const result = await pi.exec(
+        "minimax-cli",
+        ["search", params.query, "--max-results", String(maxResults)],
+        { timeout: 30_000 },
+      );
+
+      if (result.code !== 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `❌ MiniMax CLI search failed:\n` +
+                `${result.stderr || result.stdout || "unknown error"}\n\n` +
+                `Make sure minimax-cli is installed and configured.`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `## Web Search Results: "${params.query}"\n\n` +
+              (result.stdout || "No results found"),
+          },
+        ],
+        details: { query: params.query, success: true },
+      };
+    },
+  });
+
+  /**
+   * minimax_generate — 通过 MiniMax CLI 生成图片/视频/音频。
+   */
+  pi.registerTool({
+    name: "minimax_generate",
+    label: "MiniMax Generate",
+    description:
+      "通过 MiniMax CLI 生成图片、视频或音频内容。" +
+      " 当用户要求生成素材（配图、视频演示、音效等）时使用。" +
+      " 生成的文件保存到 assets/generated/ 目录。",
+    promptSnippet: "Generate images/video/audio via MiniMax CLI",
+    promptGuidelines: [
+      "Use minimax_generate when the user asks to create images, videos, or audio assets.",
+      "Use minimax_generate for generating UI mockups, illustrations, or media content.",
+    ],
+    parameters: Type.Object({
+      type: Type.String({
+        description: "生成类型: image, video, 或 audio",
+      }),
+      prompt: Type.String({
+        description: "生成描述（如 'a modern login page with blue theme'）",
+      }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const outputDir = path.join(
+        state.projectRoot || ctx.cwd,
+        "assets",
+        "generated",
+      );
+      await ensureDir(outputDir);
+
+      const genType = params.type.toLowerCase();
+      const flag = genType === "video"
+        ? "--video"
+        : genType === "audio"
+        ? "--audio"
+        : "--image";
+
+      const result = await pi.exec(
+        "minimax-cli",
+        ["generate", flag, params.prompt, "--output", outputDir],
+        { timeout: 120_000 },
+      );
+
+      if (result.code !== 0) {
+        return {
+          content: [
+            {
+              type: "text",
+              text:
+                `❌ MiniMax CLI generation failed:\n` +
+                `${result.stderr || result.stdout || "unknown error"}`,
+            },
+          ],
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: "text",
+            text:
+              `## Generated ${genType}\n\n` +
+              `**Prompt**: ${params.prompt}\n` +
+              `**Output**: \`${outputDir}\`\n\n` +
+              (result.stdout || "Generation completed"),
+          },
+        ],
+        details: { type: genType, prompt: params.prompt, success: true },
+      };
+    },
+  });
   console.log(
     "[vibe-workflow] Extension loaded — run /vibe-init to set up a project, /vibe-enable to activate",
   );
