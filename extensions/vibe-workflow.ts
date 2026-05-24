@@ -1,0 +1,1429 @@
+/**
+ * =============================================================================
+ * Atomic Vibe Workflow Extension — 原子化 Vibe Coding 工作流
+ * =============================================================================
+ *
+ * 核心理念（摘自社区最佳实践，经优化）：
+ *   1. 最小化每个任务 — 一次只做一个原子操作
+ *   2. 每完成一个任务 → git commit（显式触发，非自动）
+ *   3. 自动维护 last-session-diff.md 和 session 交接文档
+ *   4. 通过 AGENTS.md 约束大模型的任务边界，防止需求膨胀
+ *   5. 大模型始终知道：当前任务进度、上次文件 diff、AGENTS.md 约束
+ *   6. 可以使用很久都不需要压缩上下文 🎯
+ *
+ * 优化的设计决策（vs 原始建议）：
+ *   — last-session-diff.md → docs/vibe/diffs/last.md（带结构化 meta）
+ *   — handoff.md → docs/vibe/sessions/<timestamp>.md（不覆盖，保留历史）
+ *   — 新增 tasks/active.md 显式跟踪当前任务
+ *   — Git commit 由 LLM 显式调用 vibe_checkpoint 触发（非自动，给人控制权）
+ *   — 与 superpowers skills (writing-plans, executing-plans, finishing-a-branch) 联动
+ *   — 与已有 skills (handoff, brainstorming, to-prd) 联动
+ *
+ * 安装：
+ *   cp vibe-workflow.ts ~/.pi/agent/extensions/
+ *   或 pi install <package-name>
+ *
+ * 使用：
+ *   /vibe-init           — 初始化项目 vibe 工作流
+ *   /vibe-enable         — 启用工作流（上下文注入 + 工具就绪）
+ *   /vibe-task <name>    — 设置当前任务
+ *   /vibe-checkpoint     — 提交变更 + 更新文档
+ *   /vibe-status         — 查看当前状态
+ *   /vibe-handoff        — 生成完整交接文档
+ *   /vibe-context        — 查看注入的上下文内容
+ *
+ * 对 LLM 可用的工具：
+ *   vibe_checkpoint      — LLM 完成任务后显式调用，触发 git commit
+ *   vibe_status           — LLM 查询当前工作流状态
+ *
+ * @author pi + ljh2923
+ * @version 1.0.0
+ */
+
+// =============================================================================
+// 1. 导入与类型定义
+// =============================================================================
+
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+
+import { Type } from "typebox";
+
+import * as path from "node:path";
+import * as fs from "node:fs";
+import * as fsPromises from "node:fs/promises";
+import { execSync } from "node:child_process";
+
+/** 工作流持久化状态（通过 pi.appendEntry 持久化，不参与 LLM 上下文） */
+interface VibeState {
+  /** 是否已启用 */
+  enabled: boolean;
+  /** 当前任务名称 */
+  currentTask: string;
+  /** 当前 session 的 checkpoint 计数 */
+  checkpointCount: number;
+  /** 当前 session 的唯一标识 */
+  sessionId: string;
+  /** 项目根目录（git root 或 cwd） */
+  projectRoot: string;
+}
+
+/** checkpoint 记录 */
+interface CheckpointRecord {
+  index: number;
+  timestamp: string;
+  task: string;
+  commitHash: string;
+  commitMessage: string;
+  filesChanged: string[];
+}
+
+/** Session 文档结构 */
+interface SessionDoc {
+  sessionId: string;
+  startedAt: string;
+  status: "in-progress" | "completed";
+  checkpoints: CheckpointRecord[];
+  nextSteps: string[];
+  notes: string;
+}
+
+// =============================================================================
+// 2. 常量与配置
+// =============================================================================
+
+/** vibe 工作流目录（相对于项目根） */
+const VIBE_DIR = "docs/vibe";
+const SESSIONS_DIR = `${VIBE_DIR}/sessions`;
+const DIFFS_DIR = `${VIBE_DIR}/diffs`;
+const TASKS_DIR = `${VIBE_DIR}/tasks`;
+
+/** 关键文件名 */
+const LAST_DIFF_FILE = "last.md";
+const ACTIVE_TASKS_FILE = "active.md";
+
+/** 扩展名（用于 pi.appendEntry 等） */
+const EXT_NAME = "vibe-workflow";
+
+/** 最大 diff 文件大小（避免一个 diff 撑爆上下文） */
+const MAX_DIFF_SIZE_BYTES = 30_000; // 30KB
+
+// =============================================================================
+// 3. 工具函数
+// =============================================================================
+
+/**
+ * 同步执行 git 命令，返回 stdout。失败返回 null。
+ * 封装 execSync 以统一错误处理。
+ */
+function gitExec(cwd: string, args: string[]): string | null {
+  try {
+    return execSync("git", args, {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 10_000,
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 异步执行 git 命令（通过 pi.exec）
+ * 用于在 extension hooks 中使用
+ */
+async function gitExecAsync(
+  pi: ExtensionAPI,
+  args: string[],
+  cwd: string,
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  const result = await pi.exec("git", args, { cwd, timeout: 10_000 });
+  return {
+    stdout: result.stdout?.trim() ?? "",
+    stderr: result.stderr?.trim() ?? "",
+    code: result.code,
+  };
+}
+
+/**
+ * 向上查找包含 .git 的目录，返回 git 根目录。
+ * 如果不在 git 仓库中，返回 cwd。
+ */
+function findProjectRoot(cwd: string): string {
+  try {
+    const root = execSync("git rev-parse --show-toplevel", {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 5_000,
+    }).trim();
+    return root || cwd;
+  } catch {
+    return cwd;
+  }
+}
+
+/**
+ * 检查目录是否为 git 仓库
+ */
+function isGitRepo(cwd: string): boolean {
+  return gitExec(cwd, ["rev-parse", "--git-dir"]) !== null;
+}
+
+/**
+ * 确保目录存在（递归创建）
+ */
+async function ensureDir(dirPath: string): Promise<void> {
+  await fsPromises.mkdir(dirPath, { recursive: true });
+}
+
+/**
+ * 安全读取文件，不存在返回 null
+ */
+async function readFileSafe(filePath: string): Promise<string | null> {
+  try {
+    return await fsPromises.readFile(filePath, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 写入文件（自动创建父目录）
+ */
+async function writeFile(filePath: string, content: string): Promise<void> {
+  await ensureDir(path.dirname(filePath));
+  await fsPromises.writeFile(filePath, content, "utf-8");
+}
+
+/**
+ * 追加内容到文件（自动创建父目录）
+ */
+async function appendFile(filePath: string, content: string): Promise<void> {
+  await ensureDir(path.dirname(filePath));
+  await fsPromises.appendFile(filePath, content, "utf-8");
+}
+
+/**
+ * 生成 session ID: YYYY-MM-DD-HHmm
+ */
+function generateSessionId(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return [
+    now.getFullYear(),
+    "-",
+    pad(now.getMonth() + 1),
+    "-",
+    pad(now.getDate()),
+    "-",
+    pad(now.getHours()),
+    pad(now.getMinutes()),
+  ].join("");
+}
+
+/**
+ * 获取当前时间的 ISO 字符串
+ */
+function getTimestamp(): string {
+  return new Date().toISOString();
+}
+
+// =============================================================================
+// 3.2 Git 操作
+// =============================================================================
+
+/**
+ * 获取变更的文件列表（相对于 git root）
+ * 包括 staged 和 unstaged 变更
+ */
+function getChangedFiles(cwd: string): string[] {
+  const output = gitExec(cwd, ["diff", "--name-only", "HEAD"]);
+  if (!output) return [];
+
+  // 同时包含未追踪的新文件
+  const untracked = gitExec(cwd, [
+    "ls-files",
+    "--others",
+    "--exclude-standard",
+  ]);
+
+  const changed = output
+    .split("\n")
+    .filter(Boolean)
+    .filter((f) => !f.startsWith(DIFFS_DIR) && !f.startsWith(SESSIONS_DIR));
+
+  const newFiles = (untracked || "")
+    .split("\n")
+    .filter(Boolean)
+    .filter((f) => !f.startsWith(DIFFS_DIR) && !f.startsWith(SESSIONS_DIR));
+
+  return [...new Set([...changed, ...newFiles])];
+}
+
+/**
+ * 获取当前 diff（staged + unstaged），用于生成 diff summary
+ * 限制大小避免撑爆上下文
+ */
+function getDiffSummary(cwd: string): string {
+  // 获取 diffstat（比完整 diff 更简洁）
+  const staged = gitExec(cwd, ["diff", "--staged", "--stat"]);
+  const unstaged = gitExec(cwd, ["diff", "--stat"]);
+
+  const lines: string[] = [];
+  lines.push(`# Diff Summary — ${getTimestamp()}`);
+  lines.push("");
+
+  if (staged) {
+    lines.push("## Staged Changes");
+    lines.push("```");
+    lines.push(staged);
+    lines.push("```");
+    lines.push("");
+  }
+
+  if (unstaged) {
+    lines.push("## Unstaged Changes");
+    lines.push("```");
+    lines.push(unstaged);
+    lines.push("```");
+    lines.push("");
+  }
+
+  if (!staged && !unstaged) {
+    lines.push("_(no changes)_");
+  }
+
+  return lines.join("\n");
+}
+
+/**
+ * 获取完整的 diff（用于存档），限制大小
+ */
+function getFullDiff(cwd: string): string {
+  const staged = gitExec(cwd, ["diff", "--staged"]) || "";
+  const unstaged = gitExec(cwd, ["diff"]) || "";
+  const combined = [staged, unstaged].filter(Boolean).join("\n\n");
+
+  if (combined.length > MAX_DIFF_SIZE_BYTES) {
+    return (
+      combined.slice(0, MAX_DIFF_SIZE_BYTES) +
+      "\n\n[... diff truncated, too large ...]"
+    );
+  }
+  return combined || "_(no changes)_";
+}
+
+/**
+ * 执行 git commit
+ * @returns commit hash 或 null（失败/无变更）
+ */
+function gitCommit(
+  cwd: string,
+  message: string,
+): { hash: string } | null {
+  // 先检查是否有变更
+  const changedFiles = getChangedFiles(cwd);
+  if (changedFiles.length === 0) return null;
+
+  // Stage all changes (排除 vibe 目录，避免循环)
+  const stageResult = gitExec(cwd, ["add", "-A"]);
+  if (stageResult === null) return null;
+
+  // Commit
+  const commitResult = gitExec(cwd, [
+    "commit",
+    "-m",
+    message,
+    "--no-verify",
+  ]);
+
+  if (commitResult === null) return null;
+
+  // 获取 commit hash
+  const hash = gitExec(cwd, ["rev-parse", "--short", "HEAD"]);
+  return hash ? { hash } : null;
+}
+
+/**
+ * 获取最近的 N 个 commit（用于 session doc）
+ */
+function getRecentCommits(
+  cwd: string,
+  sinceHash: string | null,
+): { hash: string; message: string; files: string }[] {
+  const range = sinceHash ? `${sinceHash}..HEAD` : "HEAD~10..HEAD";
+  const format = "--format=%h|||%s";
+  const output = gitExec(cwd, ["log", range, format, "--name-only"]);
+  if (!output) return [];
+
+  const commits: { hash: string; message: string; files: string }[] = [];
+  let current: { hash: string; message: string; files: string } | null = null;
+
+  for (const line of output.split("\n")) {
+    if (line.includes("|||")) {
+      if (current) commits.push(current);
+      const [hash, ...rest] = line.split("|||");
+      current = { hash: hash.trim(), message: rest.join("|||").trim(), files: "" };
+    } else if (current && line.trim()) {
+      current.files += (current.files ? "\n" : "") + line.trim();
+    }
+  }
+  if (current) commits.push(current);
+
+  return commits;
+}
+
+// =============================================================================
+// 3.3 会话文档管理
+// =============================================================================
+
+/**
+ * 读取或创建 session 文档
+ */
+async function loadSessionDoc(
+  projectRoot: string,
+  state: VibeState,
+): Promise<SessionDoc> {
+  const docPath = path.join(
+    projectRoot,
+    SESSIONS_DIR,
+    `${state.sessionId}.md`,
+  );
+
+  const existing = await readFileSafe(docPath);
+  if (existing) {
+    return parseSessionDoc(existing, state);
+  }
+
+  // 创建新的 session 文档
+  const doc: SessionDoc = {
+    sessionId: state.sessionId,
+    startedAt: getTimestamp(),
+    status: "in-progress",
+    checkpoints: [],
+    nextSteps: [],
+    notes: "",
+  };
+  await writeSessionDoc(projectRoot, state, doc);
+  return doc;
+}
+
+/**
+ * 从 markdown 解析 session 文档
+ * 简化版解析器，处理我们生成的格式
+ */
+function parseSessionDoc(md: string, state: VibeState): SessionDoc {
+  const doc: SessionDoc = {
+    sessionId: state.sessionId,
+    startedAt: extractField(md, "Started") || getTimestamp(),
+    status: (extractField(md, "Status") as SessionDoc["status"]) || "in-progress",
+    checkpoints: [],
+    nextSteps: [],
+    notes: extractField(md, "Notes") || "",
+  };
+
+  // 提取 next steps
+  const nextStepsMatch = md.match(/## Next Steps\n([\s\S]*?)(?=\n##|$)/);
+  if (nextStepsMatch) {
+    doc.nextSteps = nextStepsMatch[1]
+      .split("\n")
+      .filter((l) => l.trim().startsWith("-") || l.trim().match(/^\d+\./))
+      .map((l) => l.replace(/^[-*\d.]\s*/, "").trim());
+  }
+
+  return doc;
+}
+
+/**
+ * 从 markdown 中提取字段
+ */
+function extractField(md: string, field: string): string | null {
+  const regex = new RegExp(`\\*\\*${field}\\*\\*:\\s*(.+)`, "i");
+  const match = md.match(regex);
+  return match ? match[1].trim() : null;
+}
+
+/**
+ * 写入 session 文档
+ */
+async function writeSessionDoc(
+  projectRoot: string,
+  state: VibeState,
+  doc: SessionDoc,
+): Promise<void> {
+  const docPath = path.join(
+    projectRoot,
+    SESSIONS_DIR,
+    `${state.sessionId}.md`,
+  );
+
+  const lines: string[] = [];
+  lines.push(`# Vibe Session: ${state.sessionId}`);
+  lines.push("");
+  lines.push("## Session Info");
+  lines.push(`- **Started**: ${doc.startedAt}`);
+  lines.push(`- **Updated**: ${getTimestamp()}`);
+  lines.push(`- **Status**: ${doc.status}`);
+  lines.push(`- **Checkpoints**: ${doc.checkpoints.length}`);
+  lines.push(`- **Current Task**: ${state.currentTask || "_(none)_"}`);
+  lines.push("");
+
+  if (doc.checkpoints.length > 0) {
+    lines.push("## Checkpoints");
+    lines.push("");
+    for (const cp of doc.checkpoints) {
+      lines.push(`### Checkpoint ${cp.index}: \`${cp.commitHash}\``);
+      lines.push(`- **Time**: ${cp.timestamp}`);
+      lines.push(`- **Task**: ${cp.task || state.currentTask}`);
+      lines.push(`- **Message**: ${cp.commitMessage}`);
+      if (cp.filesChanged.length > 0) {
+        lines.push(`- **Files**: ${cp.filesChanged.map((f) => `\`${f}\``).join(", ")}`);
+      }
+      lines.push("");
+    }
+  }
+
+  if (doc.nextSteps.length > 0) {
+    lines.push("## Next Steps");
+    for (const step of doc.nextSteps) {
+      lines.push(`- [ ] ${step}`);
+    }
+    lines.push("");
+  }
+
+  if (doc.notes) {
+    lines.push("## Notes");
+    lines.push(doc.notes);
+    lines.push("");
+  }
+
+  lines.push("## Related Documents");
+  if (fs.existsSync(path.join(projectRoot, "AGENTS.md"))) {
+    lines.push("- [AGENTS.md](../../AGENTS.md) — 项目约束与规范");
+  }
+  lines.push(`- [Last Diff](../diffs/${LAST_DIFF_FILE}) — 最近变更 diff`);
+  lines.push(`- [Active Tasks](../tasks/${ACTIVE_TASKS_FILE}) — 当前任务列表`);
+  lines.push("");
+
+  await writeFile(docPath, lines.join("\n"));
+}
+
+/**
+ * 更新 last-session-diff.md
+ */
+async function updateLastDiff(projectRoot: string, cwd: string): Promise<void> {
+  const diffPath = path.join(projectRoot, DIFFS_DIR, LAST_DIFF_FILE);
+  const diffContent = getDiffSummary(cwd);
+  const fullDiff = getFullDiff(cwd);
+
+  const content = [
+    diffContent,
+    "",
+    "---",
+    "",
+    "## Full Diff",
+    "```diff",
+    fullDiff,
+    "```",
+    "",
+  ].join("\n");
+
+  await writeFile(diffPath, content);
+}
+
+/**
+ * 更新 active tasks 文件
+ */
+async function updateActiveTasks(
+  projectRoot: string,
+  state: VibeState,
+  doc: SessionDoc,
+): Promise<void> {
+  const tasksPath = path.join(projectRoot, TASKS_DIR, ACTIVE_TASKS_FILE);
+
+  const lines: string[] = [];
+  lines.push("# Active Tasks");
+  lines.push("");
+  lines.push(`> Session: ${state.sessionId} · Checkpoints: ${doc.checkpoints.length}`);
+  lines.push("");
+
+  lines.push("## 🔄 Current Task");
+  lines.push(`**${state.currentTask || "_(none)_"}**`);
+  lines.push("");
+
+  if (doc.checkpoints.length > 0) {
+    lines.push("## ✅ Completed");
+    for (const cp of doc.checkpoints) {
+      lines.push(`- [x] ${cp.task || "Checkpoint " + cp.index} (\`${cp.commitHash}\`)`);
+    }
+    lines.push("");
+  }
+
+  if (doc.nextSteps.length > 0) {
+    lines.push("## 📋 Next Steps");
+    for (const step of doc.nextSteps) {
+      lines.push(`- [ ] ${step}`);
+    }
+    lines.push("");
+  }
+
+  lines.push("---");
+  lines.push(`_Last updated: ${getTimestamp()}_`);
+
+  await writeFile(tasksPath, lines.join("\n"));
+}
+
+// =============================================================================
+// 3.4 AGENTS.md 解析（简化版）
+// =============================================================================
+
+/**
+ * 读取 AGENTS.md 并提取关键部分用于上下文注入。
+ * pi 已通过 context files 机制加载 AGENTS.md，这里只做补充提取。
+ */
+async function readAgentsMd(
+  projectRoot: string,
+): Promise<{ exists: boolean; constraints: string[] }> {
+  const filePath = path.join(projectRoot, "AGENTS.md");
+  const content = await readFileSafe(filePath);
+
+  if (!content) {
+    return { exists: false, constraints: [] };
+  }
+
+  // 提取约束行（以 "- " 或数字开头的行，在特定 section 下）
+  const constraints: string[] = [];
+
+  // 查找 "Constraints" 或 "Task Boundaries" section
+  const sections = content.split(/\n##?\s+/);
+  for (const section of sections) {
+    const lowerSection = section.toLowerCase();
+    if (
+      lowerSection.startsWith("task boundaries") ||
+      lowerSection.startsWith("constraints") ||
+      lowerSection.startsWith("项目约束")
+    ) {
+      const lines = section.split("\n").slice(1); // 跳过标题
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith("-") || trimmed.match(/^\d+\./)) {
+          constraints.push(trimmed.replace(/^[-*\d.]\s*/, ""));
+        }
+      }
+    }
+  }
+
+  return { exists: true, constraints };
+}
+
+// =============================================================================
+// 4. 核心工作流逻辑
+// =============================================================================
+
+/**
+ * 构建上下文注入消息（在 before_agent_start 中注入）。
+ *
+ * 设计原则：
+ *   — 精简：总长度控制在 ~300 tokens 以内，不给上下文增加负担
+ *   — 引用而非内联：文档路径用文件引用，LLM 需要时自行 read
+ *   — AGENTS.md 约束由 pi 的 context files 机制加载，这里不重复
+ */
+async function buildContextInjection(
+  projectRoot: string,
+  state: VibeState,
+): Promise<string> {
+  const changedFiles = isGitRepo(projectRoot)
+    ? getChangedFiles(projectRoot)
+    : [];
+
+  const lines: string[] = [];
+  lines.push("## Vibe Workflow");
+  lines.push(`- Session: \`${state.sessionId}\` · Checkpoints: ${state.checkpointCount}`);
+  lines.push(
+    `- Task: **${state.currentTask || "_(未设置, 用 /vibe-task 设置)_"}**`,
+  );
+
+  // 未提交变更提醒
+  if (changedFiles.length > 0) {
+    const fileList = changedFiles
+      .slice(0, 6)
+      .map((f) => `\`${path.basename(f)}\``)
+      .join(", ");
+    const more = changedFiles.length > 6
+      ? ` +${changedFiles.length - 6} more`
+      : "";
+    lines.push(`- Uncommitted: ${fileList}${more}`);
+  }
+
+  lines.push("");
+  lines.push("**Reference docs** (read when needed):");
+  lines.push(
+    `- \`${path.join(VIBE_DIR, "sessions", state.sessionId + ".md")}\` — full session log`,
+  );
+  lines.push(
+    `- \`${path.join(VIBE_DIR, "diffs", LAST_DIFF_FILE)}\` — last changes diff`,
+  );
+  lines.push(
+    `- \`${path.join(VIBE_DIR, "tasks", ACTIVE_TASKS_FILE)}\` — task list & progress`,
+  );
+  lines.push("");
+  lines.push("**Rules:**");
+  lines.push(
+    "- After completing the current task, call \`vibe_checkpoint\` to commit & update docs",
+  );
+  lines.push(
+    "- Do NOT expand scope beyond the current task. One task at a time.",
+  );
+  lines.push(
+    "- Use \`vibe_status\` to check workflow state at any time.",
+  );
+
+  return lines.join("\n");
+}
+
+/**
+ * 执行 checkpoint：git commit + diff 汇总 + session doc 更新
+ */
+async function executeCheckpoint(
+  pi: ExtensionAPI,
+  ctx: ExtensionContext,
+  state: VibeState,
+  message?: string,
+): Promise<{ success: boolean; message: string }> {
+  const projectRoot = state.projectRoot;
+  const cwd = ctx.cwd;
+
+  // 1. 检查是否为 git 仓库
+  if (!isGitRepo(cwd)) {
+    return {
+      success: false,
+      message: "⚠️ 当前目录不是 Git 仓库，无法执行 checkpoint。请先在项目中初始化 Git。",
+    };
+  }
+
+  // 2. 获取变更文件
+  const changedFiles = getChangedFiles(cwd);
+  if (changedFiles.length === 0) {
+    return {
+      success: false,
+      message: "📝 没有检测到文件变更，跳过 checkpoint。",
+    };
+  }
+
+  // 3. 生成 commit 信息
+  const taskName = state.currentTask || "vibe-task";
+  const checkpointNum = state.checkpointCount + 1;
+  const autoMessage = message ||
+    `[${taskName}] checkpoint #${checkpointNum}: ${changedFiles.length} file(s) changed`;
+
+  const fullCommitMessage = [
+    autoMessage,
+    "",
+    `Checkpoint: ${checkpointNum} · Session: ${state.sessionId}`,
+    `Files: ${changedFiles.map((f) => path.basename(f)).join(", ")}`,
+  ].join("\n");
+
+  // 4. 执行 commit
+  const commitResult = gitCommit(cwd, fullCommitMessage);
+  if (!commitResult) {
+    return {
+      success: false,
+      message: "❌ Git commit 失败，请检查是否有未解决的冲突。",
+    };
+  }
+
+  // 5. 更新状态
+  state.checkpointCount = checkpointNum;
+
+  // 6. 更新 last-session-diff.md
+  await updateLastDiff(projectRoot, cwd);
+
+  // 7. 更新 session doc
+  const doc = await loadSessionDoc(projectRoot, state);
+  doc.checkpoints.push({
+    index: checkpointNum,
+    timestamp: getTimestamp(),
+    task: state.currentTask,
+    commitHash: commitResult.hash,
+    commitMessage: autoMessage,
+    filesChanged: changedFiles,
+  });
+  await writeSessionDoc(projectRoot, state, doc);
+
+  // 8. 更新 active tasks
+  await updateActiveTasks(projectRoot, state, doc);
+
+  // 9. 持久化状态
+  await pi.appendEntry(EXT_NAME, state);
+
+  return {
+    success: true,
+    message:
+      `✅ Checkpoint #${checkpointNum} 完成！\n` +
+      `   Commit: \`${commitResult.hash}\`\n` +
+      `   Files: ${changedFiles.map((f) => `\`${f}\``).join(", ")}\n` +
+      `   Diff: docs/vibe/diffs/last.md`,
+  };
+}
+
+/**
+ * 生成 handoff 文档（与 handoff skill 互补）
+ */
+async function generateHandoff(
+  projectRoot: string,
+  state: VibeState,
+): Promise<string> {
+  const doc = await loadSessionDoc(projectRoot, state);
+  const agentsMd = await readAgentsMd(projectRoot);
+
+  const lines: string[] = [];
+  lines.push(`# Handoff: ${state.sessionId}`);
+  lines.push("");
+  lines.push("> 本文件由 vibe-workflow 扩展生成，供下一个 session 快速接手。");
+  lines.push(`> 生成时间: ${getTimestamp()}`);
+  lines.push("");
+
+  lines.push("## 📋 当前状态");
+  lines.push(`- **Session**: ${state.sessionId}`);
+  lines.push(`- **Status**: ${doc.status}`);
+  lines.push(`- **Checkpoints**: ${doc.checkpoints.length}`);
+  lines.push(`- **Current Task**: ${state.currentTask || "_(none)_"}`);
+  lines.push("");
+
+  if (doc.checkpoints.length > 0) {
+    lines.push("## ✅ 已完成的 Checkpoints");
+    lines.push("");
+    lines.push("| # | Commit | Task | Files |");
+    lines.push("|---|--------|------|-------|");
+    for (const cp of doc.checkpoints) {
+      lines.push(
+        `| ${cp.index} | \`${cp.commitHash}\` | ${cp.task || "-"} | ${cp.filesChanged.length} files |`,
+      );
+    }
+    lines.push("");
+  }
+
+  if (doc.nextSteps.length > 0) {
+    lines.push("## 📋 下一步");
+    for (const step of doc.nextSteps) {
+      lines.push(`- [ ] ${step}`);
+    }
+    lines.push("");
+  }
+
+  if (agentsMd.constraints.length > 0) {
+    lines.push("## 🚧 关键约束 (from AGENTS.md)");
+    for (const constraint of agentsMd.constraints.slice(0, 5)) {
+      lines.push(`- ${constraint}`);
+    }
+    lines.push("");
+  }
+
+  lines.push("## 📄 参考文档");
+  lines.push("- Session 完整记录: `docs/vibe/sessions/`");
+  lines.push("- Diff 汇总: `docs/vibe/diffs/last.md`");
+  lines.push("- 任务列表: `docs/vibe/tasks/active.md`");
+  lines.push("- 项目约束: `AGENTS.md`");
+  lines.push("");
+
+  lines.push("## 💡 建议 Skill 使用");
+  lines.push("- 开始新工作前使用 `/skill:brainstorming`");
+  lines.push("- 复杂功能使用 `/skill:writing-plans` 生成计划");
+  lines.push("- 执行计划使用 `/skill:executing-plans`");
+  lines.push("- 完成后使用 `/skill:finishing-a-development-branch`");
+  lines.push("");
+
+  lines.push("---");
+  lines.push(
+    `_Tip: 新 session 中运行 \`/vibe-enable\` 启用工作流，然后 \`/vibe-task\` 设置当前任务。_`,
+  );
+
+  return lines.join("\n");
+}
+
+// =============================================================================
+// 5. 扩展入口
+// =============================================================================
+
+export default function (pi: ExtensionAPI) {
+  // --- 5.1 状态管理 ---
+
+  /** 内存状态 */
+  let state: VibeState = {
+    enabled: false,
+    currentTask: "",
+    checkpointCount: 0,
+    sessionId: generateSessionId(),
+    projectRoot: "",
+  };
+
+  /**
+   * 从持久化存储恢复状态（在 session_start 中调用）
+   */
+  async function restoreState(ctx: ExtensionContext): Promise<void> {
+    const projectRoot = findProjectRoot(ctx.cwd);
+    state.projectRoot = projectRoot;
+
+    // 尝试从 session entries 恢复
+    const entries = ctx.sessionManager.getEntries();
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (
+        entry.type === "custom" &&
+        (entry as { customType?: string }).customType === EXT_NAME
+      ) {
+        const saved = (entry as { data?: VibeState }).data;
+        if (saved) {
+          state = { ...state, ...saved };
+          return;
+        }
+      }
+    }
+
+    // 无持久化状态，用默认值
+    state.sessionId = generateSessionId();
+    state.checkpointCount = 0;
+    state.currentTask = "";
+    state.enabled = false;
+  }
+
+  // --- 5.2 状态追踪（缓存优化） ---
+
+  /**
+   * 记录上次注入的状态哈希，用于去重。
+   * 只在 state 真正变化时注入上下文，避免：
+   *   1. systemPrompt 修改 → 前缀变化 → Anthropic cache 全部失效
+   *   2. 每个 turn 都注入 → message 累积 → 上下文膨胀
+   *
+   * 策略：message 注入（放在消息末尾 + 去重）
+   *   ✅ 系统提示不变 → 前缀缓存命中
+   *   ✅ 中间消息不变 → 缓存命中
+   *   ✅ 只有最后的新消息需要重新计算
+   *   ✅ 只在状态变化时注入 → 不会累积膨胀
+   */
+  let lastInjectedStateHash = "";
+
+  /**
+   * 计算当前状态的哈希（用于去重判断）
+   */
+  function computeStateHash(): string {
+    return `${state.currentTask}|${state.checkpointCount}|${state.sessionId}`;
+  }
+
+  // --- 5.3 Hooks ---
+
+  /**
+   * session_start: 恢复状态，初始化项目路径
+   */
+  pi.on("session_start", async (_event, ctx) => {
+    await restoreState(ctx);
+    // 重置注入标记，新 session 首次 prompt 会注入上下文
+    lastInjectedStateHash = "";
+
+    // 确保 vibe 目录存在
+    const projectRoot = state.projectRoot;
+    if (projectRoot) {
+      await ensureDir(path.join(projectRoot, SESSIONS_DIR));
+      await ensureDir(path.join(projectRoot, DIFFS_DIR));
+      await ensureDir(path.join(projectRoot, TASKS_DIR));
+    }
+  });
+
+  /**
+   * before_agent_start: 注入工作流上下文
+   *
+   * ⚠️ 缓存考量（关键！）：
+   *   — 用 message 注入（在消息列表末尾），而非 systemPrompt（在前缀）
+   *   — 这样 system prompt + 历史消息全部保持缓存命中
+   *   — 只有新增的 vibe context 消息需要重新计算
+   *
+   * ⚠️ 去重考量：
+   *   — 只在 state 变化时注入（任务切换 / checkpoint 完成 / session 变更）
+   *   — 避免每个 user prompt 都注入，防止消息累积膨胀
+   */
+  pi.on("before_agent_start", async (event, ctx) => {
+    if (!state.enabled) return;
+
+    // 去重：状态没变就不重复注入
+    const currentHash = computeStateHash();
+    if (currentHash === lastInjectedStateHash) {
+      return;
+    }
+    lastInjectedStateHash = currentHash;
+
+    const contextInjection = await buildContextInjection(
+      state.projectRoot,
+      state,
+    );
+
+    // message 注入：放入消息列表末尾，不破坏前缀缓存
+    return {
+      message: {
+        customType: EXT_NAME,
+        content: contextInjection,
+        display: false, // TUI 不可见，只给 LLM
+      },
+    };
+  });
+
+  /**
+   * agent_end: 更新 session doc（不自动 commit）
+   */
+  pi.on("agent_end", async (_event, ctx) => {
+    if (!state.enabled) return;
+
+    try {
+      const doc = await loadSessionDoc(state.projectRoot, state);
+      doc.status = "in-progress";
+      await writeSessionDoc(state.projectRoot, state, doc);
+    } catch {
+      // 静默失败，不影响主流程
+    }
+  });
+
+  /**
+   * session_shutdown: 标记 session 完成
+   */
+  pi.on("session_shutdown", async (_event, ctx) => {
+    if (!state.enabled) return;
+
+    try {
+      const doc = await loadSessionDoc(state.projectRoot, state);
+      doc.status = "completed";
+      await writeSessionDoc(state.projectRoot, state, doc);
+      await updateActiveTasks(state.projectRoot, state, doc);
+      await pi.appendEntry(EXT_NAME, state);
+
+      if (ctx.hasUI) {
+        ctx.ui.notify(
+          `Vibe session ${state.sessionId} completed: ${state.checkpointCount} checkpoints`,
+          "info",
+        );
+      }
+    } catch {
+      // 静默失败
+    }
+  });
+
+  // --- 5.3 Commands ---
+
+  /**
+   * /vibe-init — 初始化项目 vibe 工作流
+   *   创建 docs/vibe/ 目录，可选创建 AGENTS.md
+   */
+  pi.registerCommand("vibe-init", {
+    description: "初始化项目 Vibe 工作流（创建目录结构和 AGENTS.md 模板）",
+    handler: async (_args, ctx) => {
+      const projectRoot = findProjectRoot(ctx.cwd);
+      state.projectRoot = projectRoot;
+
+      // 创建目录
+      await ensureDir(path.join(projectRoot, SESSIONS_DIR));
+      await ensureDir(path.join(projectRoot, DIFFS_DIR));
+      await ensureDir(path.join(projectRoot, TASKS_DIR));
+
+      // 创建 .gitkeep
+      await writeFile(path.join(projectRoot, SESSIONS_DIR, ".gitkeep"), "");
+      await writeFile(path.join(projectRoot, DIFFS_DIR, ".gitkeep"), "");
+
+      // 初始化 active tasks
+      const tasksContent = [
+        "# Active Tasks",
+        "",
+        "> 此文件由 vibe-workflow 扩展自动维护",
+        "",
+        "## 🔄 Current Task",
+        "_(none)_",
+        "",
+        "## ✅ Completed",
+        "_(no completed tasks yet)_",
+        "",
+        "## 📋 Next Steps",
+        "_(no next steps yet)_",
+        "",
+      ].join("\n");
+      await writeFile(
+        path.join(projectRoot, TASKS_DIR, ACTIVE_TASKS_FILE),
+        tasksContent,
+      );
+
+      // 如果 AGENTS.md 不存在，创建模板
+      const agentsPath = path.join(projectRoot, "AGENTS.md");
+      if (!fs.existsSync(agentsPath)) {
+        const projectName = path.basename(projectRoot);
+        const agentsTemplate = [
+          `# Project: ${projectName}`,
+          "",
+          "## Task Boundaries",
+          "<!-- 任务边界约束：大模型不会自动扩展需求，严格遵循以下边界 -->",
+          "- Each task MUST be a single, small, atomic unit of work",
+          "- Each task MUST be verifiable (answer \"is this done?\" with yes/no)",
+          "- After completing each task, call the **vibe_checkpoint** tool",
+          "- Do NOT expand scope beyond the current task without user approval",
+          "- Read `docs/vibe/tasks/active.md` at the start of each session",
+          "",
+          "## Current Focus",
+          `<!-- TASK: ${projectName}-init -->`,
+          "- Initialize project vibe workflow",
+          "- Set up project structure",
+          "",
+          "## Constraints",
+          "<!-- 项目约束 -->",
+          "- Follow existing code patterns and conventions",
+          "- Do NOT modify package.json without explicit confirmation",
+          "- Write tests for new features when applicable",
+          "",
+          "## Conventions",
+          "<!-- 项目约定 -->",
+          "- Use TypeScript for all new code (if applicable)",
+          "- Document public APIs with JSDoc comments",
+          "- Use conventional commits format",
+          "",
+        ].join("\n");
+        await writeFile(agentsPath, agentsTemplate);
+        ctx.ui.notify("✅ 已创建 AGENTS.md 模板", "info");
+      }
+
+      ctx.ui.notify(
+        "✅ Vibe 工作流初始化完成！\n" +
+          `   目录: ${VIBE_DIR}/\n` +
+          "   运行 /vibe-enable 启用工作流",
+        "info",
+      );
+    },
+  });
+
+  /**
+   * /vibe-enable — 启用 vibe 工作流
+   */
+  pi.registerCommand("vibe-enable", {
+    description: "启用 Vibe 工作流（开始上下文注入和 checkpoint 功能）",
+    handler: async (_args, ctx) => {
+      state.enabled = true;
+      state.sessionId = generateSessionId();
+      state.checkpointCount = 0;
+
+      await pi.appendEntry(EXT_NAME, state);
+
+      if (ctx.hasUI) {
+        ctx.ui.setStatus(EXT_NAME, `vibe: ${state.sessionId}`);
+        ctx.ui.notify(
+          `🚀 Vibe 工作流已启用\n` +
+            `   Session: ${state.sessionId}\n` +
+            `   使用 /vibe-task <任务名> 设置当前任务`,
+          "info",
+        );
+      }
+    },
+  });
+
+  /**
+   * /vibe-disable — 禁用 vibe 工作流
+   */
+  pi.registerCommand("vibe-disable", {
+    description: "禁用 Vibe 工作流",
+    handler: async (_args, ctx) => {
+      state.enabled = false;
+      await pi.appendEntry(EXT_NAME, state);
+
+      if (ctx.hasUI) {
+        ctx.ui.setStatus(EXT_NAME, undefined);
+        ctx.ui.notify("⏸️ Vibe 工作流已禁用", "info");
+      }
+    },
+  });
+
+  /**
+   * /vibe-task <name> — 设置当前任务
+   */
+  pi.registerCommand("vibe-task", {
+    description: "设置当前任务名称（用于 commit 信息和文档）",
+    handler: async (args, ctx) => {
+      if (!args || !args.trim()) {
+        ctx.ui.notify(
+          `当前任务: ${state.currentTask || "_(未设置)_"}\n用法: /vibe-task <任务名称>`,
+          "info",
+        );
+        return;
+      }
+
+      state.currentTask = args.trim();
+      await pi.appendEntry(EXT_NAME, state);
+
+      // 更新 tasks 文件
+      const doc = await loadSessionDoc(state.projectRoot, state);
+      await updateActiveTasks(state.projectRoot, state, doc);
+
+      ctx.ui.notify(`📋 当前任务已设为: ${state.currentTask}`, "info");
+    },
+  });
+
+  /**
+   * /vibe-checkpoint — 手动执行 checkpoint
+   */
+  pi.registerCommand("vibe-checkpoint", {
+    description: "提交当前变更（git commit）+ 更新 diff 和 session 文档",
+    handler: async (_args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify(
+          "⚠️ Vibe 工作流未启用。请先运行 /vibe-enable",
+          "warning",
+        );
+        return;
+      }
+
+      const result = await executeCheckpoint(pi, ctx, state);
+      ctx.ui.notify(result.message, result.success ? "info" : "warning");
+    },
+  });
+
+  /**
+   * /vibe-status — 显示当前工作流状态
+   */
+  pi.registerCommand("vibe-status", {
+    description: "显示 Vibe 工作流当前状态",
+    handler: async (_args, ctx) => {
+      const isGit = isGitRepo(state.projectRoot);
+      const changedFiles = isGit ? getChangedFiles(ctx.cwd) : [];
+      const doc = await loadSessionDoc(state.projectRoot, state);
+
+      const lines: string[] = [];
+      lines.push("## 🎯 Vibe Workflow Status");
+      lines.push("");
+      lines.push(`| 项目 | 状态 |`);
+      lines.push(`|------|------|`);
+      lines.push(
+        `| Workflow | ${state.enabled ? "✅ 已启用" : "⏸️ 已禁用"} |`,
+      );
+      lines.push(`| Session | \`${state.sessionId}\` |`);
+      lines.push(`| Checkpoints | ${state.checkpointCount} |`);
+      lines.push(`| Current Task | ${state.currentTask || "_(未设置)_"} |`);
+      lines.push(
+        `| Git Repo | ${isGit ? "✅" : "❌ 非 Git 仓库"} |`,
+      );
+      lines.push(
+        `| Uncommitted | ${changedFiles.length} file(s) |`,
+      );
+      lines.push(`| Session Status | ${doc.status} |`);
+      lines.push("");
+
+      if (changedFiles.length > 0) {
+        lines.push("### 📝 未提交的变更");
+        for (const f of changedFiles) {
+          lines.push(`- \`${f}\``);
+        }
+        lines.push("");
+      }
+
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  /**
+   * /vibe-handoff — 生成交接文档 + 自动触发 /skill:handoff
+   *
+   * 双视角交接：
+   *   1. vibe-workflow 生成数据视角（结构化：checkpoint 表、diff 引用、约束摘要）
+   *   2. 自动触发 /skill:handoff 生成 LLM 视角（语义化：上下文理解、建议下一步）
+   *
+   * 用法：
+   *   /vibe-handoff              → 数据视角 + LLM 视角（全量）
+   *   /vibe-handoff --data-only  → 仅数据视角（不触发 skill）
+   */
+  pi.registerCommand("vibe-handoff", {
+    description:
+      "生成 Vibe 交接文档 + 自动触发 /skill:handoff（--data-only 仅数据视角）",
+    handler: async (args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify(
+          "⚠️ Vibe 工作流未启用。请先运行 /vibe-enable",
+          "warning",
+        );
+        return;
+      }
+
+      // 1. 生成数据视角交接
+      const handoffContent = await generateHandoff(
+        state.projectRoot,
+        state,
+      );
+      const handoffPath = path.join(
+        state.projectRoot,
+        SESSIONS_DIR,
+        `handoff-${state.sessionId}.md`,
+      );
+      await writeFile(handoffPath, handoffContent);
+
+      // 2. 如果非 --data-only，自动触发 LLM 视角的 handoff skill
+      const dataOnly = args?.trim() === "--data-only";
+
+      if (dataOnly) {
+        ctx.ui.notify(
+          `📦 交接文档已生成: docs/vibe/sessions/handoff-${state.sessionId}.md`,
+          "info",
+        );
+      } else {
+        // 桥接：自动触发 /skill:handoff，让 LLM 生成语义化交接补充
+        // 将 session 信息作为参数传给 handoff skill
+        const skillArgs = [
+          `【Session: ${state.sessionId}】`,
+          `【Checkpoints: ${state.checkpointCount}】`,
+          `【数据交接已生成: docs/vibe/sessions/handoff-${state.sessionId}.md，请引用它而不要重复内容】`,
+        ].join(" ");
+
+        pi.sendUserMessage(
+          `/skill:handoff ${skillArgs}`,
+          { deliverAs: "followUp" },
+        );
+
+        ctx.ui.notify(
+          `📦 数据交接: docs/vibe/sessions/handoff-${state.sessionId}.md\n` +
+            `🧠 已排队 /skill:handoff（LLM 将在空闲时生成语义交接）`,
+          "info",
+        );
+      }
+    },
+  });
+
+  /**
+   * /vibe-context — 查看会注入的上下文内容
+   */
+  pi.registerCommand("vibe-context", {
+    description: "查看 Vibe 工作流会在每次对话中注入的上下文内容",
+    handler: async (_args, ctx) => {
+      const injection = await buildContextInjection(
+        state.projectRoot,
+        state,
+      );
+
+      ctx.ui.notify(injection, "info");
+    },
+  });
+
+  // --- 5.4 Tools (LLM 可调用) ---
+
+  /**
+   * vibe_checkpoint — LLM 完成任务后调用，触发 git commit
+   */
+  pi.registerTool({
+    name: "vibe_checkpoint",
+    label: "Vibe Checkpoint",
+    description:
+      "完成当前任务后调用此工具，自动执行 git commit、生成 diff 摘要、更新 session 文档。" +
+      " 在 AGENTS.md 中有约束「每个任务完成后必须调用此工具」。如果 vibe 工作流未启用，此工具不执行任何操作。",
+    promptSnippet:
+      "Commit current changes and update session documentation",
+    promptGuidelines: [
+      "Use vibe_checkpoint after completing each atomic task to commit changes and update tracking documents.",
+      "Do NOT call vibe_checkpoint if no meaningful changes were made.",
+      "Call vibe_checkpoint BEFORE moving on to the next task.",
+    ],
+    parameters: Type.Object({
+      message: Type.Optional(
+        Type.String({
+          description:
+            "可选的 commit message 补充说明。不提供则自动生成。",
+        }),
+      ),
+    }),
+    async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!state.enabled) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "⚠️ Vibe 工作流未启用。请在终端运行 /vibe-enable 启用。",
+            },
+          ],
+        };
+      }
+
+      const result = await executeCheckpoint(
+        pi,
+        ctx,
+        state,
+        params.message,
+      );
+
+      return {
+        content: [{ type: "text", text: result.message }],
+        details: {
+          success: result.success,
+          checkpointCount: state.checkpointCount,
+          sessionId: state.sessionId,
+        },
+      };
+    },
+  });
+
+  /**
+   * vibe_status — LLM 查询当前工作流状态
+   */
+  pi.registerTool({
+    name: "vibe_status",
+    label: "Vibe Status",
+    description:
+      "查询当前 Vibe 工作流状态：当前任务、checkpoint 数量、未提交变更等。在需要了解项目进度时调用。",
+    promptSnippet:
+      "Query current workflow status, task, and uncommitted changes",
+    promptGuidelines: [
+      "Use vibe_status to understand the current project state before starting work.",
+      "Use vibe_status to check if there are uncommitted changes that need a checkpoint.",
+    ],
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+      if (!state.enabled) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "⚠️ Vibe 工作流未启用。",
+            },
+          ],
+        };
+      }
+
+      const isGit = isGitRepo(state.projectRoot);
+      const changedFiles = isGit ? getChangedFiles(ctx.cwd) : [];
+      const doc = await loadSessionDoc(state.projectRoot, state);
+
+      const lines: string[] = [];
+      lines.push(`Session: ${state.sessionId}`);
+      lines.push(`Enabled: ${state.enabled}`);
+      lines.push(`Checkpoints: ${state.checkpointCount}`);
+      lines.push(`Current Task: ${state.currentTask || "(none)"}`);
+      lines.push(`Git Repo: ${isGit ? "yes" : "no"}`);
+      lines.push(`Uncommitted Files: ${changedFiles.length}`);
+      lines.push(`Session Status: ${doc.status}`);
+
+      if (changedFiles.length > 0) {
+        lines.push(`\nChanged files:\n${changedFiles.map((f) => `  - ${f}`).join("\n")}`);
+      }
+
+      if (doc.nextSteps.length > 0) {
+        lines.push(`\nNext Steps:\n${doc.nextSteps.map((s) => `  - ${s}`).join("\n")}`);
+      }
+
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: {
+          enabled: state.enabled,
+          checkpointCount: state.checkpointCount,
+          sessionId: state.sessionId,
+          currentTask: state.currentTask,
+          changedFiles,
+          nextSteps: doc.nextSteps,
+        },
+      };
+    },
+  });
+
+  // --- 5.5 初始化日志 ---
+  console.log(
+    "[vibe-workflow] Extension loaded — run /vibe-init to set up a project, /vibe-enable to activate",
+  );
+}

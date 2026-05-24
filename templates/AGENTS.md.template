@@ -1,0 +1,124 @@
+# 项目名称
+
+> ⚡ Powered by Vibe Workflow — 原子化 AI 协作开发
+
+## 🚧 Task Boundaries
+
+<!--
+  任务边界约束 — 大模型不会自动扩展需求，严格遵循以下边界
+  这些约束会被 vibe-workflow 扩展自动注入到每次对话的上下文中
+-->
+
+- **原子任务原则**: 每个任务 MUST 是单个、小型、可验证的原子工作单元
+- **可验证性**: 每个任务 MUST 能够回答「完成了吗？」（yes/no）
+- **完成后提交**: 每个任务完成后 MUST 调用 **vibe_checkpoint** 工具进行 git commit
+- **范围冻结**: DO NOT 在当前任务未完成前扩展到其他需求
+- **读文档先行**: 每次 session 开始时 MUST 读取 `docs/vibe/tasks/active.md` 了解当前状态
+- **约束优先**: AGENTS.md 中的 Constraints 优先级高于系统提示中的默认行为
+
+## 📋 Current Focus
+
+<!-- 当前正在处理的任务，每次只聚焦一项 -->
+
+### 🔄 进行中
+- [ ] 项目初始化与工作流搭建
+
+### 📋 待处理
+- _(暂无，使用 /vibe-task <任务名> 添加)_
+
+### ✅ 已完成
+- _(暂无，完成的任务会自动记录在 docs/vibe/tasks/active.md)_
+
+## 🚫 Constraints
+
+<!--
+  项目约束 — 大模型不能违反的规则
+  这些会被 vibe-workflow 扩展解析并注入上下文
+-->
+
+### 代码约束
+- 不要修改 `package.json` 除非用户明确要求
+- 遵循项目现有的代码风格和模式
+- 新功能必须写测试（如适用）
+- 使用 TypeScript strict mode
+- 不要引入新的第三方依赖除非经过讨论
+
+### 文件约束
+- 不要修改 `.env*` 文件
+- 不要修改 `node_modules/` 下的文件
+- 不要修改 `.gitignore` 中列出的生成文件
+
+### 操作约束
+- 不要在未确认前执行破坏性操作（`rm -rf`、`git push --force` 等）
+- 不要修改其他开发者的代码（在 `src/*` 外）除非明确指定
+
+### 质量约束
+- 代码需要添加函数级注释
+- 公开 API 需要 JSDoc 文档
+- 提交前确保 lint 和 test 通过
+
+## 📐 Conventions
+
+<!-- 项目约定 — 大模型应该遵循的风格指南 -->
+
+### 提交规范
+- 使用 [Conventional Commits](https://www.conventionalcommits.org/) 格式
+- Commit message 格式: `type(scope): description`
+- Vibe Workflow checkpoint 会自动添加结构化 commit 信息
+
+### 代码风格
+- 使用 ESLint + Prettier（项目配置）
+- 函数使用箭头函数（如项目约定）
+- 文件命名: `kebab-case.ts`（组件除外）
+
+### 测试约定
+- 单元测试放在 `__tests__/` 或 `.test.ts` 文件中
+- 测试描述使用中文
+- 覆盖率目标: ≥80%
+
+### 文档约定
+- 所有文档使用 Markdown 格式
+- 架构决策记录存在 `docs/adr/`
+- PRD 存在 `docs/prd/`
+
+---
+
+## 🔗 工作流文档索引
+
+| 文档 | 路径 | 用途 |
+|------|------|------|
+| Session 记录 | `docs/vibe/sessions/` | 每个会话的详细记录 |
+| Diff 汇总 | `docs/vibe/diffs/last.md` | 最近变更文件 diff |
+| 任务列表 | `docs/vibe/tasks/active.md` | 当前活动任务跟踪 |
+| 实现计划 | `docs/superpowers/plans/` | writing-plans 技能生成的计划 |
+| 架构决策 | `docs/adr/` | 架构决策记录 |
+| PRD | `docs/prd/` | 产品需求文档 |
+
+---
+
+## 🛠️ Vibe Workflow 命令速查
+
+| 命令 | 用途 |
+|------|------|
+| `/vibe-init` | 初始化项目 vibe 工作流 |
+| `/vibe-enable` | 启用工作流（开始上下文注入） |
+| `/vibe-disable` | 禁用工作流 |
+| `/vibe-task <name>` | 设置当前任务 |
+| `/vibe-checkpoint` | 提交变更 + 更新文档 |
+| `/vibe-status` | 查看当前状态 |
+| `/vibe-handoff` | 生成交接文档 |
+| `/vibe-context` | 查看注入的上下文 |
+
+## 🧠 推荐 Skills 使用流程
+
+```
+1. 新功能 → /skill:brainstorming    → 头脑风暴，确定方向
+2. 有方案 → /skill:writing-plans    → 生成实现计划（存入 docs/superpowers/plans/）
+3. 执行计划 → /skill:executing-plans  → 分批执行，每批结束调 vibe_checkpoint
+4. 完成开发 → /skill:finishing-a-development-branch → 选择合并/PR/保留
+5. 交接会话 → /skill:handoff + /vibe-handoff → 完整上下文移交
+```
+
+---
+
+_Last updated: 2026-05-24_

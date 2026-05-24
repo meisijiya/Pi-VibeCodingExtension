@@ -1,0 +1,34 @@
+{
+  "name": "pi-vibe-workflow",
+  "version": "1.0.0",
+  "description": "Atomic Vibe Coding Workflow for pi — 原子化 AI 协作开发：最小化任务、Git checkpoint、上下文不膨胀、Skills 全联动",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "vibe-coding",
+    "ai-coding-workflow",
+    "git-workflow",
+    "checkpoint",
+    "session-handoff"
+  ],
+  "author": "ljh2923",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ljh2923/pi-vibe-workflow"
+  },
+  "homepage": "https://github.com/ljh2923/pi-vibe-workflow#readme",
+  "pi": {
+    "extensions": ["./extensions"],
+    "image": "https://raw.githubusercontent.com/ljh2923/pi-vibe-workflow/main/docs/workflow-diagram.png"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "files": [
+    "extensions/",
+    "templates/",
+    "README.md"
+  ]
+}
