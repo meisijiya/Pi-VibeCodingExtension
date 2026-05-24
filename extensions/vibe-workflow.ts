@@ -804,6 +804,9 @@ async function buildContextInjection(
     "- Do NOT expand scope beyond the current task. One task at a time.",
   );
   lines.push(
+    "- Every function MUST have a brief comment describing its purpose (函数级注释)",
+  );
+  lines.push(
     "- Use \`vibe_status\` to check workflow state at any time.",
   );
 
