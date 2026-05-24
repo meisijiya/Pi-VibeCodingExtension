@@ -2719,8 +2719,10 @@ export default function (pi: ExtensionAPI) {
 
       // 自动查找: 搜索所有 provider 中的多模态模型
       if (!visionModel) {
-        // modelRegistry.list() 不存在，用 find() 逐个尝试
-        const visionPatterns = ["mimo", "vision", "gemini", "claude", "gpt-4o"];
+        // 逐个 pattern 尝试（find 支持模糊匹配）
+        const visionPatterns = [
+          "mimo", "vision", "gemini", "claude", "gpt-4o", "minimax", "opencode",
+        ];
         for (const pattern of visionPatterns) {
           visionModel = ctx.modelRegistry.find(undefined, pattern);
           if (visionModel) break;
