@@ -37,7 +37,7 @@
  *   vibe_status           — LLM 查询当前工作流状态
  *
  * @author pi + ljh2923
- * @version 4.0.0
+ * @version 5.0.0
  */
 
 // =============================================================================
@@ -1094,6 +1094,57 @@ export default function (pi: ExtensionAPI) {
   });
 
   /**
+   * v4.1: 模型感知的上下文注入
+   *
+   * 根据当前模型类型选择注入策略：
+   *   — 主力模型（deepseek 等）：全量 vibe 上下文（任务、checkpoint、diff、规则）
+   *   — 工具模型（mimo、minimax 等）：精简上下文（仅当前任务描述，不注入 vibe 状态）
+   *   — 避免浪费 Token：工具模型不需要知道 checkpoint 数和文件变更历史
+   */
+  function getInjectionMode(ctx: ExtensionContext): "full" | "minimal" | "none" {
+    try {
+      const model = ctx.model;
+      if (!model) return "full";
+      const modelId = model.id.toLowerCase();
+      // 主力模型：注入全量上下文
+      if (
+        modelId.includes("deepseek") ||
+        modelId.includes("claude") ||
+        modelId.includes("gpt") ||
+        modelId.includes("gemini") ||
+        modelId.includes("qwen")
+      ) {
+        return "full";
+      }
+      // 工具模型（mimo 多模态、minimax 生成）：不注入 vibe 状态
+      if (
+        modelId.includes("mimo") ||
+        modelId.includes("minimax") ||
+        modelId.includes("dall-e") ||
+        modelId.includes("imagen")
+      ) {
+        return "minimal";
+      }
+    } catch {
+      // 无法获取模型信息，默认全量
+    }
+    return "full";
+  }
+
+  /**
+   * 构建精简上下文（给工具模型用，不浪费 Token）
+   */
+  function buildMinimalContext(state: VibeState): string {
+    if (!state.currentTask) return "";
+    return [
+      `Current task: ${state.currentTask}`,
+      `Session: ${state.sessionId}`,
+      "",
+      "Focus on the immediate request. Coding workflow context is not relevant.",
+    ].join("\n");
+  }
+
+  /**
    * before_agent_start: 注入工作流上下文
    *
    * ⚠️ 缓存考量（关键！）：
@@ -1104,21 +1155,36 @@ export default function (pi: ExtensionAPI) {
    * ⚠️ 去重考量：
    *   — 只在 state 变化时注入（任务切换 / checkpoint 完成 / session 变更）
    *   — 避免每个 user prompt 都注入，防止消息累积膨胀
+   *
+   * ⚠️ v4.1 Token 节省：
+   *   — 工具模型（mimo、minimax）注入精简上下文（~50 tokens vs ~300 tokens）
    */
   pi.on("before_agent_start", async (event, ctx) => {
     if (!state.enabled) return;
 
+    const mode = getInjectionMode(ctx);
+
+    // none 模式：完全不注入
+    if (mode === "none") return;
+
     // 去重：状态没变就不重复注入
-    const currentHash = computeStateHash();
+    const currentHash = computeStateHash() + "|" + mode;
     if (currentHash === lastInjectedStateHash) {
       return;
     }
     lastInjectedStateHash = currentHash;
 
-    const contextInjection = await buildContextInjection(
-      state.projectRoot,
-      state,
-    );
+    // 根据模式选择上下文
+    let contextInjection: string;
+    if (mode === "minimal") {
+      contextInjection = buildMinimalContext(state);
+      if (!contextInjection) return; // 无任务时不注入
+    } else {
+      contextInjection = await buildContextInjection(
+        state.projectRoot,
+        state,
+      );
+    }
 
     // message 注入：放入消息列表末尾，不破坏前缀缓存
     return {
@@ -2428,8 +2494,240 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // ===================================================================
+  // 5.3.5 v5: 多模态模型切换命令
+  // ===================================================================
+
+  /** 主力模型 ID（用于切回） */
+  let primaryModelId = "";
+
   /**
-   * vibe_checkpoint — LLM 完成任务后调用，触发 git commit
+   * /vibe-mimo — 切换到多模态模型（MiniMax Mimo v2.5 或其他）用于识图。
+   *
+   * 用法:
+   *   /vibe-mimo                      → 切换到已配置的多模态模型
+   *   /vibe-mimo --model <model-id>   → 指定模型
+   *   /vibe-mimo --back               → 切回主力模型
+   *
+   * 上下文策略: 精简注入（仅任务描述），不注入 vibe 状态，节省 Token。
+   * 结果回传: 在同一个 session 中，切回主力模型后历史消息自动可见。
+   *
+   * 使用流程:
+   *   /vibe-mimo → Ctrl+V 贴图 → "分析这个 UI 设计" → /vibe-mimo --back
+   */
+  pi.registerCommand("vibe-mimo", {
+    description:
+      "切换到多模态模型用于识图（精简上下文注入，/vibe-mimo --back 切回）",
+    handler: async (args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify("⚠️ Vibe 工作流未启用", "warning");
+        return;
+      }
+
+      // --back: 切回主力模型
+      if (args?.trim() === "--back") {
+        if (!primaryModelId) {
+          ctx.ui.notify(
+            "⚠️ 未记录主力模型。请手动 Ctrl+P 切换。",
+            "warning",
+          );
+          return;
+        }
+        const primaryModel = ctx.modelRegistry.find(
+          primaryModelId.includes("/")
+            ? primaryModelId.split("/")[0]
+            : undefined,
+          primaryModelId.includes("/")
+            ? primaryModelId.split("/")[1]
+            : primaryModelId,
+        );
+        if (primaryModel) {
+          await pi.setModel(primaryModel);
+          // 切回后强制重新注入全量上下文
+          lastInjectedStateHash = "";
+          ctx.ui.notify(
+            `🔙 已切回主力模型: \`${primaryModel.provider}/${primaryModel.id}\``,
+            "info",
+          );
+        } else {
+          ctx.ui.notify(
+            `⚠️ 未找到模型 \`${primaryModelId}\`，请手动 Ctrl+P 切换`,
+            "warning",
+          );
+        }
+        return;
+      }
+
+      // 记录当前主力模型（用于 --back）
+      try {
+        const currentModel = ctx.model;
+        if (currentModel) {
+          primaryModelId = `${currentModel.provider}/${currentModel.id}`;
+        }
+      } catch {
+        // 无法获取模型信息
+      }
+
+      // 查找多模态模型
+      let visionModel;
+
+      // 优先使用 --model 参数
+      if (args?.includes("--model")) {
+        const modelArg = args.replace(/.*--model\s+/, "").trim().split(/\s+/)[0];
+        if (modelArg.includes("/")) {
+          const [provider, id] = modelArg.split("/");
+          visionModel = ctx.modelRegistry.find(provider, id);
+        } else {
+          visionModel = ctx.modelRegistry.find(undefined, modelArg);
+        }
+      }
+
+      // 自动查找: 优先 MiniMax Mimo
+      if (!visionModel) {
+        for (const provider of ["minimax", "google", "anthropic", "openai"]) {
+          const models = ctx.modelRegistry.list(provider);
+          if (models) {
+            visionModel = models.find(
+              (m: { id: string }) =>
+                m.id.toLowerCase().includes("mimo") ||
+                m.id.toLowerCase().includes("vision") ||
+                m.id.toLowerCase().includes("gemini") ||
+                m.id.toLowerCase().includes("claude") ||
+                m.id.toLowerCase().includes("gpt-4o"),
+            );
+            if (visionModel) break;
+          }
+        }
+      }
+
+      if (!visionModel) {
+        ctx.ui.notify(
+          "⚠️ 未找到多模态模型。\n" +
+            "   请确认已配置 API Key，或用 /vibe-mimo --model <provider/id>",
+          "warning",
+        );
+        return;
+      }
+
+      // 切换模型
+      await pi.setModel(visionModel);
+      // 触发精简上下文注入
+      lastInjectedStateHash = "";
+
+      ctx.ui.notify(
+        `👁️  已切换到多模态模型: \`${visionModel.provider}/${visionModel.id}\`\n` +
+          `   上下文: 精简模式（仅任务描述）\n` +
+          `   现在可以 Ctrl+V 贴图并描述需求\n` +
+          `   完成后: /vibe-mimo --back 切回主力模型`,
+        "info",
+      );
+    },
+  });
+
+  /**
+   * /vibe-minimax — 使用 MiniMax CLI 工具生成图片/视频/音频。
+   *
+   * 这是一个桥接命令，通过 pi.exec() 调用 minimax-cli 工具。
+   * 结果保存到项目 assets/ 目录，并在 session 中注入结果摘要。
+   *
+   * 前置条件: 已安装 minimax-cli 并配置 API Key。
+   * 文档: https://platform.minimaxi.com/docs/token-plan/minimax-cli
+   *
+   * 用法:
+   *   /vibe-minimax generate --image "a modern login page"   → 生成图片
+   *   /vibe-minimax generate --video "product walkthrough"    → 生成视频
+   *   /vibe-minimax describe <image-path>                    → 描述图片内容
+   *   /vibe-minimax setup                                    → 检查 CLI 配置
+   *
+   * 上下文策略: 完全不注入 vibe 上下文（minimax-cli 是外部工具）。
+   * 结果回传: 资源保存到 assets/generated/，摘要注入到 session。
+   */
+  pi.registerCommand("vibe-minimax", {
+    description:
+      "使用 MiniMax CLI 生成图片/视频/音频（桥接 minimax-cli 工具）",
+    handler: async (args, ctx) => {
+      if (!args?.trim() || args.trim() === "setup") {
+        // 检查 CLI 是否可用
+        const check = await pi.exec("minimax-cli", ["--version"], {
+          timeout: 5000,
+        });
+        if (check.code === 0) {
+          ctx.ui.notify(
+            `✅ MiniMax CLI 可用\n` +
+              `   Version: ${check.stdout?.trim() || "unknown"}\n` +
+              `   用法: /vibe-minimax generate --image "描述"`,
+            "info",
+          );
+        } else {
+          ctx.ui.notify(
+            "⚠️ MiniMax CLI 未安装或未配置\n" +
+              "   安装: 参考 https://platform.minimaxi.com/docs/token-plan/minimax-cli\n" +
+              "   检查: /vibe-minimax setup",
+            "warning",
+          );
+        }
+        return;
+      }
+
+      // 确保输出目录
+      const outputDir = path.join(
+        state.projectRoot || ctx.cwd,
+        "assets",
+        "generated",
+      );
+      await ensureDir(outputDir);
+
+      // 解析子命令
+      const cmdArgs = args.trim().split(/\s+/);
+      const subcommand = cmdArgs[0];
+      const restArgs = cmdArgs.slice(1);
+
+      ctx.ui.notify(
+        `🎬 正在调用 MiniMax CLI: ${subcommand} ${restArgs.slice(0, 3).join(" ")}...`,
+        "info",
+      );
+
+      // 执行 CLI
+      const result = await pi.exec(
+        "minimax-cli",
+        [subcommand, ...restArgs, "--output", outputDir],
+        { timeout: 60_000 },
+      );
+
+      if (result.code !== 0) {
+        ctx.ui.notify(
+          `❌ MiniMax CLI 执行失败\n${result.stderr || result.stdout || "unknown error"}`,
+          "error",
+        );
+        return;
+      }
+
+      // 结果摘要注入到 session
+      const summary = [
+        `## MiniMax CLI Result`,
+        `- Command: \`minimax-cli ${subcommand} ${restArgs.slice(0, 3).join(" ")}...\``,
+        `- Output: \`${outputDir}\``,
+        `- Status: ✅ Success`,
+        "",
+        "```",
+        (result.stdout || "").slice(0, 1000),
+        "```",
+      ].join("\n");
+
+      pi.sendMessage({
+        customType: EXT_NAME,
+        content: summary,
+        display: true,
+      });
+
+      ctx.ui.notify(
+        `✅ MiniMax CLI 完成\n` +
+          `   输出: ${outputDir}\n` +
+          `   结果已注入到会话上下文`,
+        "info",
+      );
+    },
+  });
    */
   pi.registerTool({
     name: "vibe_checkpoint",
