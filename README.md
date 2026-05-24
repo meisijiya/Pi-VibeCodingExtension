@@ -65,7 +65,7 @@ pi
 | `/vibe-disable` | 禁用工作流 | `/vibe-disable` |
 | `/vibe-task <name>` | 设置当前任务名 | `/vibe-task "实现登录验证"` |
 | `/vibe-checkpoint` | 提交变更 + 更新文档 | `/vibe-checkpoint` |
-| `/vibe-status` | 查看 session 状态 + 未提交文件 | `/vibe-status` |
+| `/vibe-status` | 查看状态 + 上下文用量 + 压缩建议 | `/vibe-status` |
 | `/vibe-handoff` | 生成交接文档 + 自动触发 /skill:handoff | `/vibe-handoff` |
 | `/vibe-context` | 预览注入给 LLM 的上下文 | `/vibe-context` |
 
@@ -551,6 +551,18 @@ your-project/
 │ 节省 ~300 tokens/次                                     │
 └─────────────────────────────────────────────────────────┘
 ```
+
+### 关于上下文压缩
+
+> **vibe 工作流大幅降低压缩频率，但不能完全替代压缩。**
+
+| 层 | 机制 | 说明 |
+|----|------|------|
+| 1️⃣ 预防 | 短 session + 精简注入 + handoff 交接 | 从根源减少上下文堆积 |
+| 2️⃣ 监控 | `/vibe-status` 实时显示用量（🟢🟡🔴） | 看得到，就不会意外溢出 |
+| 3️⃣ 兜底 | pi 内置自动压缩 + `/compact` 手动压缩 | 溢出也能恢复 |
+
+**实际操作建议：** 每 3-5 个 checkpoint 跑一次 `/vibe-status`。接近 60% 时 `/vibe-handoff` → `/new` → `/vibe-enable` 无缝交接；接近 80% 时可手动 `/compact`。
 
 ---
 
