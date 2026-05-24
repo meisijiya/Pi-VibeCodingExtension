@@ -2739,7 +2739,16 @@ export default function (pi: ExtensionAPI) {
       }
 
       // 切换模型
-      await pi.setModel(visionModel);
+      const setResult = await pi.setModel(visionModel);
+      if (!setResult) {
+        ctx.ui.notify(
+          `⚠️ 模型切换失败: \`${visionModel.provider}/${visionModel.id}\`\n` +
+            `   可能是缺少 API Key。请确认 provider 已通过 /login 连接。`,
+          "warning",
+        );
+        return;
+      }
+
       // 触发精简上下文注入
       lastInjectedStateHash = "";
 
