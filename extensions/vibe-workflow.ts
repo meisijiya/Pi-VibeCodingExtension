@@ -2763,10 +2763,10 @@ export default function (pi: ExtensionAPI) {
   /**
    * /vibe-minimax — 使用 MiniMax CLI 工具生成图片/视频/音频。
    *
-   * 这是一个桥接命令，通过 pi.exec() 调用 minimax-cli 工具。
+   * 这是一个桥接命令，通过 pi.exec() 调用 mmx CLI 工具。
    * 结果保存到项目 assets/ 目录，并在 session 中注入结果摘要。
    *
-   * 前置条件: 已安装 minimax-cli 并配置 API Key。
+   * 前置条件: 已安装 mmx CLI 并配置 API Key。
    * 文档: https://platform.minimaxi.com/docs/token-plan/minimax-cli
    *
    * 用法:
@@ -2775,16 +2775,16 @@ export default function (pi: ExtensionAPI) {
    *   /vibe-minimax describe <image-path>                    → 描述图片内容
    *   /vibe-minimax setup                                    → 检查 CLI 配置
    *
-   * 上下文策略: 完全不注入 vibe 上下文（minimax-cli 是外部工具）。
+   * 上下文策略: 完全不注入 vibe 上下文（mmx 是外部工具）。
    * 结果回传: 资源保存到 assets/generated/，摘要注入到 session。
    */
   pi.registerCommand("vibe-minimax", {
     description:
-      "使用 MiniMax CLI 生成图片/视频/音频（桥接 minimax-cli 工具）",
+      "使用 MiniMax CLI 生成图片/视频/音频（桥接 mmx CLI 工具）",
     handler: async (args, ctx) => {
       if (!args?.trim() || args.trim() === "setup") {
         // 检查 CLI 是否可用
-        const check = await pi.exec("minimax-cli", ["--version"], {
+        const check = await pi.exec("mmx", ["--help"], {
           timeout: 5000,
         });
         if (check.code === 0) {
@@ -2798,6 +2798,7 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify(
             "⚠️ MiniMax CLI 未安装或未配置\n" +
               "   安装: 参考 https://platform.minimaxi.com/docs/token-plan/minimax-cli\n" +
+              "   命令: mmx vision describe / mmx search query / mmx image generate\n" +
               "   检查: /vibe-minimax setup",
             "warning",
           );
@@ -2825,8 +2826,8 @@ export default function (pi: ExtensionAPI) {
 
       // 执行 CLI
       const result = await pi.exec(
-        "minimax-cli",
-        [subcommand, ...restArgs, "--output", outputDir],
+        "mmx",
+        [subcommand, ...restArgs],
         { timeout: 60_000 },
       );
 
@@ -2841,7 +2842,7 @@ export default function (pi: ExtensionAPI) {
       // 结果摘要注入到 session
       const summary = [
         `## MiniMax CLI Result`,
-        `- Command: \`minimax-cli ${subcommand} ${restArgs.slice(0, 3).join(" ")}...\``,
+        `- Command: \`mmx ${subcommand} ${restArgs.slice(0, 3).join(" ")}...\``,
         `- Output: \`${outputDir}\``,
         `- Status: ✅ Success`,
         "",
@@ -3028,8 +3029,8 @@ export default function (pi: ExtensionAPI) {
 
       // 调用 MiniMax CLI 描述图片
       const result = await pi.exec(
-        "minimax-cli",
-        ["describe", absolutePath],
+        "mmx",
+        ["vision", "describe", absolutePath],
         { timeout: 30_000 },
       );
 
@@ -3041,7 +3042,7 @@ export default function (pi: ExtensionAPI) {
               text:
                 `❌ MiniMax CLI failed to describe image:\n` +
                 `${result.stderr || result.stdout || "unknown error"}\n\n` +
-                `Make sure minimax-cli is installed and configured.\n` +
+                `Make sure mmx CLI is installed and configured.\n` +
                 `Docs: https://platform.minimaxi.com/docs/token-plan/minimax-cli`,
             },
           ],
@@ -3093,8 +3094,8 @@ export default function (pi: ExtensionAPI) {
       const maxResults = params.maxResults || 5;
 
       const result = await pi.exec(
-        "minimax-cli",
-        ["search", params.query, "--max-results", String(maxResults)],
+        "mmx",
+        ["search", "query", params.query, "--limit", String(maxResults)],
         { timeout: 30_000 },
       );
 
@@ -3106,7 +3107,7 @@ export default function (pi: ExtensionAPI) {
               text:
                 `❌ MiniMax CLI search failed:\n` +
                 `${result.stderr || result.stdout || "unknown error"}\n\n` +
-                `Make sure minimax-cli is installed and configured.`,
+                `Make sure mmx CLI is installed and configured.`,
             },
           ],
         };
@@ -3158,15 +3159,17 @@ export default function (pi: ExtensionAPI) {
       await ensureDir(outputDir);
 
       const genType = params.type.toLowerCase();
-      const flag = genType === "video"
-        ? "--video"
+      // Map type to mmx subcommand
+      const subcommand = genType === "video"
+        ? "video"
         : genType === "audio"
-        ? "--audio"
-        : "--image";
+        ? "speech"
+        : "image";
+      const action = genType === "audio" ? "synthesize" : "generate";
 
       const result = await pi.exec(
-        "minimax-cli",
-        ["generate", flag, params.prompt, "--output", outputDir],
+        "mmx",
+        [subcommand, action, params.prompt],
         { timeout: 120_000 },
       );
 

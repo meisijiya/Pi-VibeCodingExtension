@@ -19,7 +19,7 @@
 - [快速开始](#快速开始)
 - [命令速查表](#命令速查表)
 - [配置指南](#配置指南)
-  - [MiniMax CLI（识图/搜索/生成）](#配置-minimax-cli识图--搜索--生成)
+  - [MiniMax CLI（识图/搜索/生成）](#配置-mmx CLI识图--搜索--生成)
   - [Mimo 多模态模型（兜底方案）](#配置-mimo-多模态模型兜底方案)
   - [配置检查清单](#配置检查清单)
 - [场景1：新项目从零开始](#场景1新项目从零开始)
@@ -308,7 +308,7 @@ feature-payment ●──● (CP #1, #2)
 │ DeepSeek 收到纯文本                            │
 │ → 调用 minimax_describe_image(path)          │
 │    ↓                                          │
-│    minimax-cli describe xxx.png               │
+│    mmx CLI describe xxx.png               │
 │    ↓                                          │
 │    返回: "This image shows..."                │
 │ → 基于描述分析问题、写代码                      │
@@ -543,7 +543,7 @@ your-project/
 │ └───────────────────────────────────────────────────┘   │
 │ 节省 ~250 tokens/次                                     │
 ├─────────────────────────────────────────────────────────┤
-│ 外部 CLI（minimax-cli）                                  │
+│ 外部 CLI（mmx CLI）                                  │
 │ ┌───────────────────────────────────────────────────┐   │
 │ │ Zero Context                                      │   │
 │ │ 纯 shell 命令，不经过 LLM                          │   │
@@ -601,21 +601,21 @@ pi update --extensions
 **第 1 步：安装**
 
 ```bash
-# 参考官方文档安装 minimax-cli
-# https://platform.minimaxi.com/docs/token-plan/minimax-cli
+# 参考官方文档安装 mmx CLI
+# https://platform.minimaxi.com/docs/token-plan/mmx CLI
 
 # 安装后验证:
-minimax-cli --version
+mmx CLI --version
 ```
 
 **第 2 步：登录**
 
 ```bash
 # 登录你的 MiniMax Token Plan 账号
-minimax-cli login
+mmx CLI login
 
 # 验证登录状态:
-minimax-cli whoami
+mmx CLI whoami
 ```
 
 **第 3 步：在 pi 中验证**
@@ -626,7 +626,7 @@ pi
 # → ✅ MiniMax CLI 可用
 ```
 
-> 💡 **不需要在 pi 中单独配置 API Key**。CLI 工具自己管理认证，扩展通过 `pi.exec("minimax-cli", ...)` 调用，与你的终端环境一致。
+> 💡 **不需要在 pi 中单独配置 API Key**。CLI 工具自己管理认证，扩展通过 `pi.exec("mmx CLI", ...)` 调用，与你的终端环境一致。
 
 ### 配置 Mimo 多模态模型（兜底方案）
 
@@ -656,7 +656,7 @@ pi
 |------|---------|---------|
 | 基础工作流 | 无（开箱即用） | `/vibe-enable` |
 | Git checkpoint | Git 已安装 | `/vibe-status` |
-| MiniMax 识图/搜索/生成 | 安装 + 登录 minimax-cli | `/vibe-minimax setup` |
+| MiniMax 识图/搜索/生成 | 安装 + 登录 mmx CLI | `/vibe-minimax setup` |
 | Mimo 原生多模态 | provider 已连接（如 opencode-go） | `/vibe-mimo` |
 | Skills 联动 | 安装 superpowers skills | `/skill:writing-plans` |
 
