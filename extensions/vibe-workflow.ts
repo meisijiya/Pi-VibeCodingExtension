@@ -2717,16 +2717,24 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      // 自动查找: 搜索所有 provider 中的多模态模型
+      // 自动查找: 搜索所有 provider 中的多模态模型（优先选支持图片的）
       if (!visionModel) {
-        // 逐个 pattern 尝试（find 支持模糊匹配）
-        const visionPatterns = [
-          "mimo", "vision", "gemini", "claude", "gpt-4o", "minimax", "opencode",
-        ];
+        const visionPatterns = ["mimo", "gemini", "claude", "gpt-4o", "vision"];
+        let bestModel = null;
         for (const pattern of visionPatterns) {
-          visionModel = ctx.modelRegistry.find(undefined, pattern);
-          if (visionModel) break;
+          const found = ctx.modelRegistry.find(undefined, pattern);
+          if (found) {
+            // 优先选支持图片的模型（跳过 mimo-v2.5-pro 这种 images: no 的）
+            if (found.input?.includes("image")) {
+              visionModel = found;
+              break;
+            }
+            // 兜底：记录第一个找到的
+            if (!bestModel) bestModel = found;
+          }
         }
+        // 如果没有支持图片的，用第一个找到的
+        if (!visionModel) visionModel = bestModel;
       }
 
       if (!visionModel) {
