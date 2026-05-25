@@ -885,6 +885,9 @@ async function executeCheckpoint(
   metrics.checkpointTimestamps.push(getTimestamp());
   metrics.filesModifiedSinceCheckpoint.clear();
 
+  // v5.6: 刷新面板
+  refreshWidget(ctx);
+
   // 6. 更新 last-session-diff.md
   await updateLastDiff(projectRoot, cwd);
 
@@ -1084,7 +1087,46 @@ export default function (pi: ExtensionAPI) {
     return `${state.currentTask}|${state.checkpointCount}|${state.sessionId}`;
   }
 
-  // --- 5.3 Hooks ---
+  // ──── 5.3.1 v5.6: TUI 状态面板 Widget ────
+
+  /** 刷新编辑器上方状态面板 */
+  function refreshWidget(ctx: ExtensionContext): void {
+    if (!state.enabled || !ctx.hasUI) return;
+
+    const changedFiles = isGitRepo(state.projectRoot)
+      ? getChangedFiles(state.projectRoot)
+      : [];
+
+    const lines: string[] = [];
+
+    // 当前任务
+    const task = state.currentTask || "_(未设置)_";
+    lines.push(`📋 任务: ${task}`);
+
+    // Checkpoint 计数
+    lines.push(`✅ CP: ${state.checkpointCount}`);
+
+    // 未提交文件
+    if (changedFiles.length > 0) {
+      const files = changedFiles.slice(0, 4).map((f) => `\`${path.basename(f)}\``).join(" ");
+      const more = changedFiles.length > 4 ? ` +${changedFiles.length - 4}` : "";
+      lines.push(`📝 未提交: ${files}${more}`);
+    } else {
+      lines.push(`📝 未提交: 0`);
+    }
+
+    // LLM tools 提示
+    lines.push(`🛠  checkpoint | context7 | smart_search | minimax_*`);
+
+    ctx.ui.setWidget("vibe-panel", lines);
+  }
+
+  /** 清除面板 */
+  function clearWidget(ctx: ExtensionContext): void {
+    ctx.ui.setWidget("vibe-panel", undefined);
+  }
+
+  // ──── 5.3 Hooks ────
 
   /**
    * session_start: 恢复状态，初始化项目路径
@@ -1095,6 +1137,8 @@ export default function (pi: ExtensionAPI) {
     lastInjectedStateHash = "";
     // v2: 重置指标
     resetMetrics();
+    // v5.6: 刷新面板
+    refreshWidget(ctx);
 
     // 确保 vibe 目录存在
     const projectRoot = state.projectRoot;
@@ -1274,6 +1318,7 @@ export default function (pi: ExtensionAPI) {
           `Vibe session ${state.sessionId} completed: ${state.checkpointCount} checkpoints`,
           "info",
         );
+        clearWidget(ctx);
       }
     } catch {
       // 静默失败
@@ -1412,6 +1457,9 @@ export default function (pi: ExtensionAPI) {
         }
       }
     }
+
+    // v5.6: 文件变更后刷新面板
+    refreshWidget(_ctx);
   });
 
   // --- 5.2.2 v2: Turn 计数 ---
@@ -1664,6 +1712,7 @@ export default function (pi: ExtensionAPI) {
 
       if (ctx.hasUI) {
         ctx.ui.setStatus(EXT_NAME, `vibe: ${state.sessionId}`);
+        refreshWidget(ctx);
         ctx.ui.notify(
           `🚀 Vibe 工作流已启用\n` +
             `   Session: ${state.sessionId}\n` +
@@ -1685,6 +1734,7 @@ export default function (pi: ExtensionAPI) {
 
       if (ctx.hasUI) {
         ctx.ui.setStatus(EXT_NAME, undefined);
+        clearWidget(ctx);
         ctx.ui.notify("⏸️ Vibe 工作流已禁用", "info");
       }
     },
@@ -1711,6 +1761,7 @@ export default function (pi: ExtensionAPI) {
       const doc = await loadSessionDoc(state.projectRoot, state);
       await updateActiveTasks(state.projectRoot, state, doc);
 
+      refreshWidget(ctx);
       ctx.ui.notify(`📋 当前任务已设为: ${state.currentTask}`, "info");
     },
   });
