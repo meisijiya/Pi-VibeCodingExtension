@@ -1232,6 +1232,31 @@ export default function (pi: ExtensionAPI) {
   });
 
   /**
+   * session_before_compact: 压缩前自动 checkpoint，git 保底。
+   * 即使压缩丢失了 session 中的 vibe context，git commit 历史仍然完整。
+   */
+  pi.on("session_before_compact", async (_event, ctx) => {
+    if (!state.enabled) return;
+
+    // 检查是否有未提交变更
+    const changedFiles = getChangedFiles(state.projectRoot);
+    if (changedFiles.length === 0) return;
+
+    // 自动 checkpoint（不留确认，压缩是自动触发的）
+    try {
+      const result = await executeCheckpoint(pi, ctx, state, "auto: pre-compaction checkpoint");
+      if (ctx.hasUI && result.success) {
+        ctx.ui.notify(
+          `📦 Pre-compaction checkpoint: ${changedFiles.length} file(s) saved to git`,
+          "info",
+        );
+      }
+    } catch {
+      // 静默失败，不影响压缩
+    }
+  });
+
+  /**
    * session_shutdown: 标记 session 完成
    */
   pi.on("session_shutdown", async (_event, ctx) => {
