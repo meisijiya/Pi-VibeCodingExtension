@@ -3294,20 +3294,46 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // 注入到会话
+      // 注入到会话——根据模型类型选择方式
       const relativePath = path.relative(
         state.projectRoot || ctx.cwd,
         wslPath,
       );
 
-      pi.sendUserMessage(
-        `[📷 Image pasted: \`${relativePath}\`] Use \`minimax_describe_image\` tool to analyze it.`,
-      );
+      // 检测当前模型是否支持多模态
+      const model = ctx.model;
+      const isVisionModel = model?.input?.includes("image");
 
-      ctx.ui.notify(
-        `📷 图片已保存: ${relativePath}\n已注入到会话，LLM 将自动调用 minimax_describe_image 分析`,
-        "info",
-      );
+      if (isVisionModel) {
+        // 多模态模型（如 Mimo）：直接发送图片数据
+        const imgData = await fsPromises.readFile(wslPath);
+        pi.sendUserMessage([
+          { type: "text" as const, text: `[📷 Image pasted: \`${relativePath}\`]` },
+          {
+            type: "image" as const,
+            source: {
+              type: "base64" as const,
+              mediaType: "image/png" as const,
+              data: imgData.toString("base64"),
+            },
+          },
+        ]);
+
+        ctx.ui.notify(
+          `📷 图片已发送给多模态模型: ${relativePath}`,
+          "info",
+        );
+      } else {
+        // 纯文本模型（如 DeepSeek）：发送文本引用，LLM 通过工具识图
+        pi.sendUserMessage(
+          `[📷 Image pasted: \`${relativePath}\`] Use \`minimax_describe_image\` tool to analyze it.`,
+        );
+
+        ctx.ui.notify(
+          `📷 图片已保存: ${relativePath}\n已注入到会话，LLM 将自动调用 minimax_describe_image 分析`,
+          "info",
+        );
+      }
     },
   });
 
