@@ -1103,15 +1103,28 @@ export default function (pi: ExtensionAPI) {
       ? getChangedFiles(state.projectRoot)
       : [];
 
-    // 上下文用量
     const usage = ctx.getContextUsage();
     const pct = usage?.tokens
       ? ((usage.tokens / (ctx.model?.contextWindow || 200000)) * 100).toFixed(0)
       : "?";
 
+    // 变更文件列表（最多 3 个）
+    const fileHint = changedFiles.length > 0
+      ? changedFiles.slice(0, 3).map((f) => path.basename(f)).join(", ")
+        + (changedFiles.length > 3 ? ` +${changedFiles.length - 3}` : "")
+      : "—";
+
     const lines: string[] = [];
-    lines.push(`📋 ${state.currentTask || "_(/vibe-task 设置)_"}  │  ✅ CP:${state.checkpointCount}  │  📝 ${changedFiles.length} files  │  📊 ctx:${pct}%`);
-    lines.push(`🛠  checkpoint | context7 | smart_search | minimax_*  │  /vibe-panel 切换显示`);
+    // 分割线
+    lines.push("─".repeat(80));
+    // 状态行
+    lines.push(
+      `📋 任务: ${state.currentTask || "未设置"}  │  ✅ CP: ${state.checkpointCount}  │  📝 变更: ${fileHint}  │  📊 ctx: ${pct}%`,
+    );
+    // 提示行
+    lines.push(
+      `🛠  checkpoint | context7 | smart_search | minimax_*  │  /vibe-panel 隐藏面板`,
+    );
 
     ctx.ui.setWidget("vibe-panel", lines);
   }
