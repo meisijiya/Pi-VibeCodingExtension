@@ -1,7 +1,7 @@
 {
   "name": "pi-vibe-workflow",
-  "version": "4.0.0",
-  "description": "Atomic Vibe Coding Workflow for pi — 原子化 AI 协作开发：最小化任务、Git checkpoint、上下文不膨胀、Skills 全联动",
+  "version": "5.4.0",
+  "description": "Vibe Coding 工作流全家桶 for pi — 原子化开发、Git checkpoint、Context7 最新文档、MiniMax 识图/搜索/生成、智能代码搜索",
   "keywords": [
     "pi-package",
     "pi-extension",
