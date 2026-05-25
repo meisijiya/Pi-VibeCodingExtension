@@ -9,7 +9,7 @@
 解法只有一个：**最小化每一步，让 AI 始终知道「在做什么、做了什么、边界在哪」**。这个 pi 扩展就是这套方法论的工程化落地。
 
 [![pi-package](https://img.shields.io/badge/pi-package-blue)](https://pi.dev/packages)
-[![version](https://img.shields.io/badge/version-5.1.0-green)](#)
+[![version](https://img.shields.io/badge/version-5.6.0-green)](#)
 [![license](https://img.shields.io/badge/license-MIT-orange)](LICENSE)
 
 ---
