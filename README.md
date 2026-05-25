@@ -564,9 +564,11 @@ your-project/
 |----|------|------|
 | 1️⃣ 预防 | 短 session + 精简注入 + handoff 交接 | 从根源减少上下文堆积 |
 | 2️⃣ 监控 | `/vibe-status` 实时显示用量（🟢🟡🔴） | 看得到，就不会意外溢出 |
-| 3️⃣ 兜底 | pi 内置自动压缩 + `/compact` 手动压缩 | 溢出也能恢复 |
+| 3️⃣ 兜底 | pi 自动压缩 + **压缩前自动 checkpoint** | git 永远有完整记录 |
 
-**实际操作建议：** 每 3-5 个 checkpoint 跑一次 `/vibe-status`。接近 60% 时 `/vibe-handoff` → `/new` → `/vibe-enable` 无缝交接；接近 80% 时可手动 `/compact`。
+**handoff 交接适用场景：** `/vibe-handoff` 是「存档」→ 生成 `docs/vibe/sessions/handoff-xxx.md`。`/vibe-enable` 是「读档」→ LLM 自动读取。任何新 session（`/new`、`pi --continue`、多分支并行）只要 enable 就能无缝衔接。
+
+**实际操作建议：** 每 3-5 个 checkpoint 跑一次 `/vibe-status`。接近 60% 时 `/vibe-handoff` → `/new` → `/vibe-enable` 无缝交接；接近 80% 时可手动 `/compact`（压缩前会自动 checkpoint 保底）。
 
 ### 多模型协作
 
