@@ -1106,12 +1106,23 @@ export default function (pi: ExtensionAPI) {
   let panelVisible = true;
 
   /**
+   * 解析任务行末尾的模型建议（💡pro / 💡flash / 💡mmx）
+   */
+  function parseModelHint(text: string): { text: string; model?: string } {
+    const match = text.match(/^(.+?)\s*💡(pro|flash|mmx)\s*$/);
+    if (match) {
+      return { text: match[1].trim(), model: match[2] };
+    }
+    return { text: text.trim() };
+  }
+
+  /**
    * 读取最新 plan 文件，解析 TODO 列表
    * 返回 { file: 文件名, tasks: [{ text, done }] } 或 null
    */
   async function readPlanTodos(projectRoot: string): Promise<{
     file: string;
-    tasks: { text: string; done: boolean }[];
+    tasks: { text: string; done: boolean; model?: string }[];
   } | null> {
     const plansDir = path.join(projectRoot, "docs", "superpowers", "plans");
     try {
@@ -1125,15 +1136,17 @@ export default function (pi: ExtensionAPI) {
         const content = await readFileSafe(path.join(plansDir, file));
         if (!content) continue;
 
-        // 解析 checkbox: - [ ] task 或 - [x] task
-        const tasks: { text: string; done: boolean }[] = [];
+        // 解析 checkbox: - [ ] task 或 - [x] task，末尾可选 💡pro/💡flash/💡mmx
+        const tasks: { text: string; done: boolean; model?: string }[] = [];
         for (const line of content.split("\n")) {
           const unchecked = line.match(/^\s*-\s*\[\s*\]\s+(.+)/);
           const checked = line.match(/^\s*-\s*\[[xX]\]\s+(.+)/);
           if (unchecked) {
-            tasks.push({ text: unchecked[1].trim(), done: false });
+            const { text, model } = parseModelHint(unchecked[1]);
+            tasks.push({ text, done: false, model });
           } else if (checked) {
-            tasks.push({ text: checked[1].trim(), done: true });
+            const { text, model } = parseModelHint(checked[1]);
+            tasks.push({ text, done: true, model });
           }
         }
 
@@ -1158,8 +1171,23 @@ export default function (pi: ExtensionAPI) {
       const lines: string[] = [];
       lines.push("─".repeat(80));
 
-      // 当前任务
-      lines.push(`📋 ${state.currentTask || "_(/vibe-task 设置)_"}`);
+      // 当前任务 + 模型推荐
+      const taskLine = state.currentTask
+        ? `📋 ${state.currentTask}`
+        : "📋 _(/vibe-task 设置)_";
+
+      // 如果 TODO 中有匹配当前任务名的 step，显示其模型推荐
+      let modelHint = "";
+      if (plan && state.currentTask) {
+        const matched = plan.tasks.find((t) =>
+          t.text.includes(state.currentTask),
+        );
+        if (matched?.model) {
+          modelHint = `  💡 /vibe-model ${matched.model}`;
+        }
+      }
+
+      lines.push(taskLine + modelHint);
 
       // TODO 列表摘要（不展示内容，避免面板过长）
       if (plan && plan.tasks.length > 0) {
@@ -2060,6 +2088,10 @@ export default function (pi: ExtensionAPI) {
           break;
         }
       }
+
+      contextParts.push(`【可用模型: pro(主力思考), flash(日常任务), mmx(MiniMax简单任务)】`);
+      contextParts.push(`【每个 Step 末尾标注推荐模型: 💡pro / 💡flash / 💡mmx】`);
+      contextParts.push(`【简单代码生成→flash, 复杂设计→pro, 代码审查→mmx】`);
 
       const skillArgs = contextParts.join(" ");
       pi.sendUserMessage(
