@@ -1089,34 +1089,29 @@ export default function (pi: ExtensionAPI) {
 
   // ──── 5.3.1 v5.6: TUI 状态面板 Widget ────
 
-  /** 刷新编辑器上方状态面板 */
+  /** 面板显示开关 */
+  let panelVisible = true;
+
+  /** 刷新编辑器上方状态面板（内容参考 /vibe-status） */
   function refreshWidget(ctx: ExtensionContext): void {
-    if (!state.enabled || !ctx.hasUI) return;
+    if (!state.enabled || !ctx.hasUI || !panelVisible) {
+      clearWidget(ctx);
+      return;
+    }
 
     const changedFiles = isGitRepo(state.projectRoot)
       ? getChangedFiles(state.projectRoot)
       : [];
 
+    // 上下文用量
+    const usage = ctx.getContextUsage();
+    const pct = usage?.tokens
+      ? ((usage.tokens / (ctx.model?.contextWindow || 200000)) * 100).toFixed(0)
+      : "?";
+
     const lines: string[] = [];
-
-    // 当前任务
-    const task = state.currentTask || "_(未设置)_";
-    lines.push(`📋 任务: ${task}`);
-
-    // Checkpoint 计数
-    lines.push(`✅ CP: ${state.checkpointCount}`);
-
-    // 未提交文件
-    if (changedFiles.length > 0) {
-      const files = changedFiles.slice(0, 4).map((f) => `\`${path.basename(f)}\``).join(" ");
-      const more = changedFiles.length > 4 ? ` +${changedFiles.length - 4}` : "";
-      lines.push(`📝 未提交: ${files}${more}`);
-    } else {
-      lines.push(`📝 未提交: 0`);
-    }
-
-    // LLM tools 提示
-    lines.push(`🛠  checkpoint | context7 | smart_search | minimax_*`);
+    lines.push(`📋 ${state.currentTask || "_(/vibe-task 设置)_"}  │  ✅ CP:${state.checkpointCount}  │  📝 ${changedFiles.length} files  │  📊 ctx:${pct}%`);
+    lines.push(`🛠  checkpoint | context7 | smart_search | minimax_*  │  /vibe-panel 切换显示`);
 
     ctx.ui.setWidget("vibe-panel", lines);
   }
@@ -2121,6 +2116,23 @@ export default function (pi: ExtensionAPI) {
         );
       }
       await pi.appendEntry(EXT_NAME, state);
+    },
+  });
+
+  /**
+   * /vibe-panel — 切换编辑器上方状态面板的显示/隐藏。
+   */
+  pi.registerCommand("vibe-panel", {
+    description: "切换编辑器上方状态面板显示/隐藏",
+    handler: async (_args, ctx) => {
+      panelVisible = !panelVisible;
+      if (panelVisible) {
+        refreshWidget(ctx);
+        ctx.ui.notify("📊 面板已显示", "info");
+      } else {
+        clearWidget(ctx);
+        ctx.ui.notify("📊 面板已隐藏（/vibe-panel 恢复）", "info");
+      }
     },
   });
 
