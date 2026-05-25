@@ -1124,12 +1124,7 @@ export default function (pi: ExtensionAPI) {
     file: string;
     tasks: { text: string; done: boolean; model?: string }[];
   } | null> {
-    // 搜索多个可能路径（cwd、git root、子目录）
-    const searchDirs = [
-      path.join(projectRoot, "docs", "superpowers", "plans"),
-      // 如果 projectRoot 不是真正的 git root，尝试常见子目录
-      path.join(projectRoot, "repo", "docs", "superpowers", "plans"),
-    ];
+    const plansDir = path.join(projectRoot, "docs", "superpowers", "plans");
     try {
       const files = await fsPromises.readdir(plansDir);
       const mdFiles = files
