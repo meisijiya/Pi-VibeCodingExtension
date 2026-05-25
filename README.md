@@ -570,21 +570,19 @@ your-project/
 ## 安装方式
 
 ```bash
-# 方式 1: GitHub（推荐）
+# 一步安装全部（vibe-workflow + context7）
 pi install git:github.com/meisijiya/Pi-VibeCodingExtension
 
-# 方式 2: npm（需要先 publish）
-pi install npm:pi-vibe-workflow
+# 快速启动
+pi
+/vibe-init
+/vibe-enable
 
-# 方式 3: 本地路径
-pi install /path/to/pi-vibe-workflow
-
-# 查看已安装
-pi list
-
-# 更新
-pi update --extensions
+# 可选：Context7 最新文档（需要注册 API Key）
+export CONTEXT7_API_KEY=ctx7sk-xxx   # https://context7.com
 ```
+
+**安装后即用：** 19 个命令 · 8 个 LLM 工具 · 完整的 Vibe Coding 工作流
 
 ### 前置依赖
 
@@ -745,7 +743,9 @@ ls ~/.agents/skills/
 | v3.0 | Per-file diff + 智能 auto-checkpoint | 1950 行 |
 | v4.0 | Squash/Rollback/Branch/Merge/Release | 2548 行 |
 | v5.0 | 模型感知上下文 + 多模态切换 | 2849 行 |
-| **v5.1** | **图片自动路由 + MiniMax CLI 工具** | **3155 行** |
+| **v5.4** | **全家桶：smart_search + Context7 + 精简** | **3400+ 行 · 2 extensions** |
+
+> 安装即得：`extensions/vibe-workflow.ts` + `extensions/pi-context7.ts`
 
 > 10 hooks · 18 commands · 5 LLM tools · 全覆盖的 Vibe Coding 工作流
 
