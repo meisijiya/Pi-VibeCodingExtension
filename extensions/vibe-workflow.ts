@@ -1175,7 +1175,7 @@ export default function (pi: ExtensionAPI) {
         lines.push(`📝 TODO: _(/skill:writing-plans 生成计划)_`);
       }
 
-      lines.push(`🛠  /vibe-files 查看变更  │  /vibe-todo 完整清单  │  /vibe-panel 隐藏`);
+      lines.push(`🛠  /vibe-files 查看变更  │  /vibe-panel 隐藏`);
       ctx.ui.setWidget("vibe-panel", lines);
     });
 
@@ -1183,7 +1183,7 @@ export default function (pi: ExtensionAPI) {
     const lines: string[] = [];
     lines.push("─".repeat(80));
     lines.push(`📋 ${state.currentTask || "_(/vibe-task 设置)_"}`);
-    lines.push(`📝 TODO: 加载中...  │  /vibe-todo 查看全部`);
+    lines.push(`📝 TODO: 加载中...`);
     ctx.ui.setWidget("vibe-panel", lines);
   }
 
