@@ -1840,11 +1840,28 @@ export default function (pi: ExtensionAPI) {
    * /vibe-task <name> — 设置当前任务
    */
   pi.registerCommand("vibe-task", {
-    description: "设置当前任务名称（用于 commit 信息和文档）",
+    description: "设置/清除当前任务名（--clear 恢复 LLM 自由探索）",
     handler: async (args, ctx) => {
+      // --clear: 清除任务，恢复自由探索
+      if (args?.trim() === "--clear") {
+        const wasSet = !!state.currentTask;
+        state.currentTask = "";
+        await pi.appendEntry(EXT_NAME, state);
+        const doc = await loadSessionDoc(state.projectRoot, state);
+        await updateActiveTasks(state.projectRoot, state, doc);
+        refreshWidget(ctx);
+        ctx.ui.notify(
+          wasSet
+            ? "🔓 任务已清除。LLM 恢复自由探索模式。"
+            : "📋 当前无任务（/vibe-task <任务名> 设置）",
+          "info",
+        );
+        return;
+      }
+
       if (!args || !args.trim()) {
         ctx.ui.notify(
-          `当前任务: ${state.currentTask || "_(未设置)_"}\n用法: /vibe-task <任务名称>`,
+          `当前任务: ${state.currentTask || "_(未设置)_"}\n用法: /vibe-task <任务名> 或 /vibe-task --clear`,
           "info",
         );
         return;
