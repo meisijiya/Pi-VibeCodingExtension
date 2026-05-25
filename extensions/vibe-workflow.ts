@@ -815,8 +815,15 @@ async function buildContextInjection(
   lines.push("- Surgical changes: touch only what you must, match existing style");
   lines.push("- Goal-driven: define verifiable success criteria before starting");
   lines.push("");
+  lines.push("**Tools:**");
   lines.push(
-    "**Tools:** Use \`context7_resolve\` + \`context7_docs\` for latest official API docs before writing library code.",
+    "- Use \`context7_resolve\` + \`context7_docs\` for latest official API docs before writing library code.",
+  );
+  lines.push(
+    "- Use built-in \`grep\` for exact matches. If no results, use \`smart_search\` for broader search.",
+  );
+  lines.push(
+    "- Use \`github_search\` to find real-world code examples from open source repos.",
   );
 
   return lines.join("\n");
@@ -3304,6 +3311,68 @@ export default function (pi: ExtensionAPI) {
         `📷 图片已保存: ${relativePath}\n已注入到会话，LLM 将自动调用 minimax_describe_image 分析`,
         "info",
       );
+    },
+  });
+
+  // ──── v5.4: smart_search tool（多策略代码搜索）──
+
+  pi.registerTool({
+    name: "smart_search",
+    label: "Smart Search",
+    description:
+      "多策略代码搜索。先用 rg 精确匹配，无结果时自动尝试大小写不敏感、单词拆分等策略。" +
+      " 当内置 grep 无结果时使用此工具进行更广泛的搜索。",
+    promptSnippet: "Multi-strategy code search with automatic fallbacks",
+    promptGuidelines: [
+      "Use smart_search when built-in grep returns no results.",
+      "smart_search automatically tries case-insensitive and word-split variations.",
+      "Prefer built-in grep for exact matches; use smart_search for broader exploration.",
+    ],
+    parameters: Type.Object({
+      query: Type.String({
+        description: "搜索查询（如 'authentication', 'JWT token'）",
+      }),
+    }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const rgBin = path.join(
+        process.env.PI_CODING_AGENT_DIR ||
+          path.join(process.env.HOME || "/home", ".pi", "agent"),
+        "bin",
+        "rg",
+      );
+
+      const strategies = [
+        { label: "exact", args: ["-n", "--no-heading", "-C", "1", params.query, "."] },
+        { label: "case-insensitive", args: ["-i", "-n", "--no-heading", "-C", "1", params.query, "."] },
+        { label: "word-split", args: ["-i", "-n", "--no-heading", "-C", "1", ...params.query.split(/\s+/).slice(0, 3).flatMap((w: string) => ["-e", w]), "."] },
+      ];
+
+      const results: string[] = [];
+      let total = 0;
+      for (const s of strategies) {
+        if (total > 0 && s.label !== "exact") break;
+        if (total > 30) break;
+        const r = await pi.exec(rgBin, s.args, { cwd: ctx.cwd, timeout: 10_000 });
+        const out = r.stdout?.trim() || "";
+        if (out) {
+          const lines = out.split("\n").filter((l: string) => !results.includes(l));
+          if (lines.length > 0) {
+            results.push(`### ${s.label}`);
+            results.push(...lines.slice(0, 40));
+            if (lines.length > 40) results.push(`... +${lines.length - 40} more`);
+            total += lines.length;
+          }
+        }
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: results.length > 0
+            ? `## Smart Search: "${params.query}"\n${results.join("\n")}`
+            : `## Smart Search: "${params.query}"\n\nNo matches. Try rephrasing.`,
+        }],
+      };
     },
   });
 
