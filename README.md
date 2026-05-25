@@ -89,6 +89,9 @@ pi
 | `/vibe-metrics` | 工作流统计面板 | `/vibe-metrics` |
 | `/vibe-autocheckpoint` | 开启/关闭自动 checkpoint | `/vibe-autocheckpoint off` |
 | `/vibe-model` | 快速切换模型（pro/flash/mmx/mimo/back） | `/vibe-model flash` |
+| `/vibe-todo` | 查看完整 TODO 列表（可滚动） | `/vibe-todo` |
+| `/vibe-files` | 查看变更文件（按 checkpoint 分组） | `/vibe-files` |
+| `/vibe-panel` | 切换编辑器上方状态面板 | `/vibe-panel` |
 
 ### 🖼️ 多模态 + MiniMax
 
@@ -519,6 +522,25 @@ your-project/
 └── .pi/
     └── settings.json
 ```
+
+---
+
+## 状态面板 + TODO 联动
+
+`/vibe-enable` 后编辑器上方自动显示状态面板：
+
+```
+────────────────────────────────────────────────────────────────────────
+📋 实现登录表单
+📝 TODO: 2 待完成 / 5 总计 60%  │  /vibe-todo 查看全部
+🛠  /vibe-files 查看变更  │  /vibe-panel 隐藏
+────────────────────────────────────────────────────────────────────────
+```
+
+- **📋 当前任务**：来自 `/vibe-task` 设置
+- **📝 TODO**：自动读取 `/skill:writing-plans` 生成的计划文件，显示进度百分比
+- **实时更新**：LLM 每完成一步（更新 plan 中 `- [x]`），面板自动刷新
+- **可控开发**：设置 `/vibe-task` 后，LLM 被强制约束「仅完成当前任务，不跳步」
 
 ---
 
