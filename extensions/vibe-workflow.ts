@@ -1092,40 +1092,95 @@ export default function (pi: ExtensionAPI) {
   /** 面板显示开关 */
   let panelVisible = true;
 
-  /** 刷新编辑器上方状态面板（内容参考 /vibe-status） */
+  /**
+   * 读取最新 plan 文件，解析 TODO 列表
+   * 返回 { file: 文件名, tasks: [{ text, done }] } 或 null
+   */
+  async function readPlanTodos(projectRoot: string): Promise<{
+    file: string;
+    tasks: { text: string; done: boolean }[];
+  } | null> {
+    const plansDir = path.join(projectRoot, "docs", "superpowers", "plans");
+    try {
+      const files = await fsPromises.readdir(plansDir);
+      const mdFiles = files
+        .filter((f) => f.endsWith(".md"))
+        .sort()
+        .reverse(); // 最新的排前面
+
+      for (const file of mdFiles) {
+        const content = await readFileSafe(path.join(plansDir, file));
+        if (!content) continue;
+
+        // 解析 checkbox: - [ ] task 或 - [x] task
+        const tasks: { text: string; done: boolean }[] = [];
+        for (const line of content.split("\n")) {
+          const unchecked = line.match(/^\s*-\s*\[\s*\]\s+(.+)/);
+          const checked = line.match(/^\s*-\s*\[[xX]\]\s+(.+)/);
+          if (unchecked) {
+            tasks.push({ text: unchecked[1].trim(), done: false });
+          } else if (checked) {
+            tasks.push({ text: checked[1].trim(), done: true });
+          }
+        }
+
+        if (tasks.length > 0) return { file, tasks };
+      }
+    } catch {
+      // 目录不存在
+    }
+    return null;
+  }
+
+  /** 刷新编辑器上方状态面板 */
   function refreshWidget(ctx: ExtensionContext): void {
     if (!state.enabled || !ctx.hasUI || !panelVisible) {
       clearWidget(ctx);
       return;
     }
 
-    const changedFiles = isGitRepo(state.projectRoot)
-      ? getChangedFiles(state.projectRoot)
-      : [];
+    // 异步读取 plan TODO，但 setWidget 是同步的，用占位符
+    readPlanTodos(state.projectRoot).then((plan) => {
+      if (!state.enabled || !panelVisible) return;
 
-    const usage = ctx.getContextUsage();
-    const pct = usage?.tokens
-      ? ((usage.tokens / (ctx.model?.contextWindow || 200000)) * 100).toFixed(0)
-      : "?";
+      const lines: string[] = [];
+      lines.push("─".repeat(80));
 
-    // 变更文件列表（最多 3 个）
-    const fileHint = changedFiles.length > 0
-      ? changedFiles.slice(0, 3).map((f) => path.basename(f)).join(", ")
-        + (changedFiles.length > 3 ? ` +${changedFiles.length - 3}` : "")
-      : "—";
+      // 当前任务
+      lines.push(`📋 ${state.currentTask || "_(/vibe-task 设置)_"}`);
 
+      // TODO 列表
+      if (plan && plan.tasks.length > 0) {
+        const pending = plan.tasks.filter((t) => !t.done);
+        const done = plan.tasks.filter((t) => t.done);
+        const maxShow = 6;
+
+        if (pending.length > 0) {
+          lines.push(`📝 TODO (${plan.file}):`);
+          for (const t of pending.slice(0, maxShow)) {
+            lines.push(`   ☐ ${t.text}`);
+          }
+          if (pending.length > maxShow) {
+            lines.push(`   ... 还有 ${pending.length - maxShow} 项`);
+          }
+        }
+
+        if (done.length > 0 && pending.length <= 3) {
+          lines.push(`   ${done.length} 项已完成`);
+        }
+      } else {
+        lines.push(`📝 TODO: _(/skill:writing-plans 生成计划)_`);
+      }
+
+      lines.push(`🛠  /vibe-files 查看变更  │  /vibe-panel 隐藏`);
+      ctx.ui.setWidget("vibe-panel", lines);
+    });
+
+    // 立即显示精简版
     const lines: string[] = [];
-    // 分割线
     lines.push("─".repeat(80));
-    // 状态行
-    lines.push(
-      `📋 任务: ${state.currentTask || "未设置"}  │  ✅ CP: ${state.checkpointCount}  │  📝 变更: ${fileHint}  │  📊 ctx: ${pct}%`,
-    );
-    // 提示行
-    lines.push(
-      `🛠  checkpoint | context7 | smart_search | minimax_*  │  /vibe-panel 隐藏面板`,
-    );
-
+    lines.push(`📋 ${state.currentTask || "_(/vibe-task 设置)_"}`);
+    lines.push(`📝 TODO: 加载中...`);
     ctx.ui.setWidget("vibe-panel", lines);
   }
 
@@ -2146,6 +2201,59 @@ export default function (pi: ExtensionAPI) {
         clearWidget(ctx);
         ctx.ui.notify("📊 面板已隐藏（/vibe-panel 恢复）", "info");
       }
+    },
+  });
+
+  /**
+   * /vibe-files — 查看变更文件列表（按 checkpoint 分组）
+   * 用户可用 Ctrl+G 打开对应文件进行人工审查。
+   */
+  pi.registerCommand("vibe-files", {
+    description: "查看变更文件列表（按 checkpoint 分组，Ctrl+G 打开审查）",
+    handler: async (_args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify("⚠️ Vibe 工作流未启用", "warning");
+        return;
+      }
+      if (!isGitRepo(state.projectRoot)) {
+        ctx.ui.notify("⚠️ 非 Git 仓库", "warning");
+        return;
+      }
+
+      const doc = await loadSessionDoc(state.projectRoot, state);
+      const lines: string[] = [];
+      lines.push("## 📝 变更文件列表");
+      lines.push("");
+
+      // 当前未提交的变更
+      const changedFiles = getChangedFiles(ctx.cwd);
+      if (changedFiles.length > 0) {
+        lines.push("### 🔄 当前未提交");
+        for (const f of changedFiles) {
+          lines.push(`- \`${f}\``);
+        }
+        lines.push("");
+      }
+
+      // 按 checkpoint 分组
+      if (doc.checkpoints.length > 0) {
+        for (const cp of doc.checkpoints) {
+          lines.push(
+            `### CP #${cp.index}: \`${cp.commitHash}\` — ${cp.task || ""}`,
+          );
+          if (cp.filesChanged?.length > 0) {
+            for (const f of cp.filesChanged) {
+              lines.push(`- \`${f}\``);
+            }
+          }
+          lines.push("");
+        }
+      }
+
+      lines.push("---");
+      lines.push("💡 用 Ctrl+G 打开文件进行人工审查");
+
+      ctx.ui.notify(lines.join("\n"), "info");
     },
   });
 
