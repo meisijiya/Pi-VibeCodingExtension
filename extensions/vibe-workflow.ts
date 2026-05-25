@@ -3337,6 +3337,112 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // --- 5.4.3 v5.5: 模型协作/路由命令 ---
+
+  /** 预定义模型别名（根据用户实际模型列表配置） */
+  const MODEL_ALIASES: Record<string, { provider: string; pattern: string; desc: string }> = {
+    pro: { provider: "opencode-go", pattern: "deepseek-v4-pro", desc: "主力思考" },
+    flash: { provider: "opencode-go", pattern: "deepseek-v4-flash", desc: "快速/便宜" },
+    review: { provider: "opencode-go", pattern: "minimax-m2.7", desc: "代码审查" },
+    mini: { provider: "opencode-go", pattern: "minimax-m2.5", desc: "轻量任务" },
+    mimo: { provider: "opencode-go", pattern: "mimo-v2.5", desc: "多模态识图" },
+  };
+
+  /** 记录切换前的模型，用于 /vibe-model back */
+  let previousModelId = "";
+
+  /**
+   * /vibe-model — 快速切换模型，实现多模型协作。
+   *
+   * 用法:
+   *   /vibe-model              → 显示别名列表和当前模型
+   *   /vibe-model pro          → 切换到 DeepSeek v4-pro（主力思考）
+   *   /vibe-model flash        → 切换到 DeepSeek v4-flash（快速便宜）
+   *   /vibe-model review       → 切换到 MiniMax M2.7（代码审查）
+   *   /vibe-model back         → 切回上一个模型
+   *
+   * 上下文自动流转——vibe 注入是 model-agnostic 的。
+   */
+  pi.registerCommand("vibe-model", {
+    description:
+      "快速切换模型（pro/flash/review/mimo/back），实现多模型协作",
+    handler: async (args, ctx) => {
+      if (!args?.trim()) {
+        // 显示可用别名
+        const current = ctx.model;
+        const lines = ["## 🧠 Vibe Model Aliases", ""];
+        lines.push(`当前: \`${current?.provider}/${current?.id}\``);
+        lines.push("");
+        lines.push("| 别名 | 模型 | 适用场景 |");
+        lines.push("|------|------|---------|");
+        for (const [alias, info] of Object.entries(MODEL_ALIASES)) {
+          const mark = current?.id?.includes(info.pattern) ? " ← 当前" : "";
+          lines.push(`| ${alias} | ${info.provider}/${info.pattern} | ${info.desc}${mark} |`);
+        }
+        lines.push("");
+        lines.push("用法: /vibe-model pro|flash|review|mimo|back");
+        ctx.ui.notify(lines.join("\n"), "info");
+        return;
+      }
+
+      const alias = args.trim();
+
+      // back: 切回上一个模型
+      if (alias === "back") {
+        if (!previousModelId) {
+          ctx.ui.notify("⚠️ 没有上一个模型记录", "warning");
+          return;
+        }
+        const [prevProvider, prevPattern] = previousModelId.includes("/")
+          ? previousModelId.split("/")
+          : [undefined, previousModelId];
+        const model = ctx.modelRegistry.find(prevProvider, prevPattern);
+        if (model) {
+          await pi.setModel(model);
+          lastInjectedStateHash = "";
+          ctx.ui.notify(
+            `🔙 已切回: \`${model.provider}/${model.id}\``,
+            "info",
+          );
+        }
+        return;
+      }
+
+      // 预定义别名
+      const info = MODEL_ALIASES[alias];
+      if (!info) {
+        ctx.ui.notify(
+          `⚠️ 未知别名 "${alias}"。可用: ${Object.keys(MODEL_ALIASES).join(", ")}, back`,
+          "warning",
+        );
+        return;
+      }
+
+      const model = ctx.modelRegistry.find(info.provider, info.pattern);
+      if (!model) {
+        ctx.ui.notify(
+          `⚠️ 未找到模型: ${info.provider}/${info.pattern}\n检查 pi --list-models`,
+          "warning",
+        );
+        return;
+      }
+
+      // 记录当前模型
+      try {
+        const current = ctx.model;
+        if (current) previousModelId = `${current.provider}/${current.id}`;
+      } catch { /* ignore */ }
+
+      await pi.setModel(model);
+      lastInjectedStateHash = "";
+
+      ctx.ui.notify(
+        `🧠 已切换: \`${model.provider}/${model.id}\` (${info.desc})\n切回: /vibe-model back`,
+        "info",
+      );
+    },
+  });
+
   // ──── v5.4: smart_search tool（多策略代码搜索）──
 
   pi.registerTool({
