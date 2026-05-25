@@ -65,7 +65,7 @@ pi
 | `/vibe-init` | 初始化项目（创建目录 + AGENTS.md 模板） | `/vibe-init` |
 | `/vibe-enable` | 启用工作流（开始上下文注入） | `/vibe-enable` |
 | `/vibe-disable` | 禁用工作流 | `/vibe-disable` |
-| `/vibe-task <name>` | 设置当前任务名 | `/vibe-task "实现登录验证"` |
+| `/vibe-task <name>` | 设置当前任务名（可独立使用，无需 plan） | `/vibe-task "实现登录验证"` |
 | `/vibe-checkpoint` | 提交变更 + 更新文档 | `/vibe-checkpoint` |
 | `/vibe-status` | 查看状态 + 上下文用量 + 压缩建议 | `/vibe-status` |
 | `/vibe-handoff` | 生成交接文档 + 自动触发 /skill:handoff | `/vibe-handoff` |
@@ -119,6 +119,8 @@ pi
 > | `/vibe-enable` | 启用了工作流 | `/vibe-disable` |
 > | `/vibe-branch <name>` | 切换了 git 分支 | `/vibe-merge` 合并回来 |
 > | `/vibe-autocheckpoint off` | 关闭了自动建议 | `/vibe-autocheckpoint on` |
+
+> 💡 `/vibe-task` 可独立使用，无需先跑 writing-plans。它只是给当前工作命个名，影响四个维度：LLM 上下文注入、git commit 信息、session 文档记录、面板显示。Plan 是锦上添花。
 >
 > `/vibe-minimax`、`/vibe-checkpoint`、`/vibe-squash` 等**不需要 back**——它们只是执行了一次操作，没有改变会话状态。
 
