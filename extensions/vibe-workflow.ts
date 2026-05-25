@@ -3216,6 +3216,93 @@ export default function (pi: ExtensionAPI) {
       };
     },
   });
+
+  // --- 5.4.2 v5.3: 剪贴板图片粘贴工具（WSL/Windows Terminal 兼容） ---
+
+  /**
+   * /vibe-paste — 从 Windows 剪贴板粘贴图片（WSL 兼容）。
+   *
+   * Windows Terminal 不支持图像协议，无法 Ctrl+V 贴图。
+   * 此命令通过 PowerShell 从 Windows 剪贴板取图片 → 存为文件 → 添加到会话。
+   *
+   * 用法:
+   *   1. 在 Windows 中截图/复制图片到剪贴板
+   *   2. 在 pi 中运行 /vibe-paste
+   *   3. 图片自动保存到 assets/pasted/，引用注入到会话
+   */
+  pi.registerCommand("vibe-paste", {
+    description:
+      "从 Windows 剪贴板粘贴图片（WSL 兼容，自动保存并注入到会话）",
+    handler: async (_args, ctx) => {
+      // 检查是否有图片
+      const checkCmd = [
+        "-Command",
+        "Add-Type -AssemblyName System.Windows.Forms; if ([System.Windows.Forms.Clipboard]::ContainsImage()) { Write-Output 'HAS_IMAGE' } else { Write-Output 'NO_IMAGE' }",
+      ];
+
+      const check = await pi.exec("powershell.exe", checkCmd, {
+        timeout: 5000,
+      });
+
+      if (!check.stdout?.includes("HAS_IMAGE")) {
+        ctx.ui.notify(
+          "📋 剪贴板中没有图片。请先在 Windows 中截图或复制图片。",
+          "warning",
+        );
+        return;
+      }
+
+      // 保存到 WSL 可访问的路径
+      const pasteDir = path.join(
+        state.projectRoot || ctx.cwd,
+        "assets",
+        "pasted",
+      );
+      await ensureDir(pasteDir);
+
+      const timestamp = Date.now();
+      const filename = `pasted-${timestamp}.png`;
+      const wslPath = path.join(pasteDir, filename);
+      // 转 Windows 路径（PowerShell 需要）
+      const winPath = wslPath
+        .replace(/^\/mnt\/([a-z])\//, "$1:\\")
+        .replace(/\//g, "\\");
+
+      // PowerShell 保存剪贴板图片
+      const saveCmd = [
+        "-Command",
+        `Add-Type -AssemblyName System.Windows.Forms; $img = [System.Windows.Forms.Clipboard]::GetImage(); if ($img) { $img.Save('${winPath}'); Write-Output 'SAVED' } else { Write-Output 'FAILED' }`,
+      ];
+
+      const result = await pi.exec("powershell.exe", saveCmd, {
+        timeout: 10_000,
+      });
+
+      if (!result.stdout?.includes("SAVED")) {
+        ctx.ui.notify(
+          "❌ 图片保存失败。请确认剪贴板中有有效图片。",
+          "error",
+        );
+        return;
+      }
+
+      // 注入到会话
+      const relativePath = path.relative(
+        state.projectRoot || ctx.cwd,
+        wslPath,
+      );
+
+      pi.sendUserMessage(
+        `[📷 Image pasted: \`${relativePath}\`] Use \`minimax_describe_image\` tool to analyze it.`,
+      );
+
+      ctx.ui.notify(
+        `📷 图片已保存: ${relativePath}\n已注入到会话，LLM 将自动调用 minimax_describe_image 分析`,
+        "info",
+      );
+    },
+  });
+
   console.log(
     "[vibe-workflow] Extension loaded — run /vibe-init to set up a project, /vibe-enable to activate",
   );
