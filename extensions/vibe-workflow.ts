@@ -800,9 +800,22 @@ async function buildContextInjection(
   lines.push(
     "- After completing the current task, call \`vibe_checkpoint\` to commit & update docs",
   );
-  lines.push(
-    "- Do NOT expand scope beyond the current task. One task at a time.",
-  );
+  // 当用户设置了 task 时，强化单任务约束
+  if (state.currentTask) {
+    lines.push(
+      "- 🎯 **CRITICAL: Complete ONLY the current task.** Do NOT proceed to next steps in the plan.",
+    );
+    lines.push(
+      "- The plan is a roadmap for future sessions. Your job is ONE step at a time.",
+    );
+    lines.push(
+      "- After completing this task, STOP and call vibe_checkpoint. Let the user decide next.",
+    );
+  } else {
+    lines.push(
+      "- Do NOT expand scope beyond the current task. One task at a time.",
+    );
+  }
   lines.push(
     "- Every function MUST have a brief comment describing its purpose (函数级注释)",
   );
@@ -1139,7 +1152,6 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // 异步读取 plan TODO，但 setWidget 是同步的，用占位符
     readPlanTodos(state.projectRoot).then((plan) => {
       if (!state.enabled || !panelVisible) return;
 
@@ -1149,30 +1161,25 @@ export default function (pi: ExtensionAPI) {
       // 当前任务
       lines.push(`📋 ${state.currentTask || "_(/vibe-task 设置)_"}`);
 
-      // TODO 列表
+      // TODO 列表摘要
       if (plan && plan.tasks.length > 0) {
         const pending = plan.tasks.filter((t) => !t.done);
         const done = plan.tasks.filter((t) => t.done);
-        const maxShow = 6;
-
-        if (pending.length > 0) {
-          lines.push(`📝 TODO (${plan.file}):`);
-          for (const t of pending.slice(0, maxShow)) {
-            lines.push(`   ☐ ${t.text}`);
-          }
-          if (pending.length > maxShow) {
-            lines.push(`   ... 还有 ${pending.length - maxShow} 项`);
-          }
+        lines.push(
+          `📝 TODO: ${pending.length} 待完成 / ${plan.tasks.length} 总计  │  /vibe-todo 查看全部`,
+        );
+        // 只显示前 2 个待完成项
+        for (const t of pending.slice(0, 2)) {
+          lines.push(`   ☐ ${t.text.slice(0, 60)}${t.text.length > 60 ? "..." : ""}`);
         }
-
-        if (done.length > 0 && pending.length <= 3) {
-          lines.push(`   ${done.length} 项已完成`);
+        if (pending.length > 2) {
+          lines.push(`   ... 还有 ${pending.length - 2} 项（/vibe-todo 查看全部）`);
         }
       } else {
         lines.push(`📝 TODO: _(/skill:writing-plans 生成计划)_`);
       }
 
-      lines.push(`🛠  /vibe-files 查看变更  │  /vibe-panel 隐藏`);
+      lines.push(`🛠  /vibe-files 查看变更  │  /vibe-todo 完整清单  │  /vibe-panel 隐藏`);
       ctx.ui.setWidget("vibe-panel", lines);
     });
 
@@ -1180,7 +1187,7 @@ export default function (pi: ExtensionAPI) {
     const lines: string[] = [];
     lines.push("─".repeat(80));
     lines.push(`📋 ${state.currentTask || "_(/vibe-task 设置)_"}`);
-    lines.push(`📝 TODO: 加载中...`);
+    lines.push(`📝 TODO: 加载中...  │  /vibe-todo 查看全部`);
     ctx.ui.setWidget("vibe-panel", lines);
   }
 
@@ -2252,6 +2259,59 @@ export default function (pi: ExtensionAPI) {
 
       lines.push("---");
       lines.push("💡 用 Ctrl+G 打开文件进行人工审查");
+
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  /**
+   * /vibe-todo — 查看完整 TODO 列表（可滚动）。
+   */
+  pi.registerCommand("vibe-todo", {
+    description: "查看完整 TODO 列表（从 writing-plans 生成的计划）",
+    handler: async (_args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify("⚠️ Vibe 工作流未启用", "warning");
+        return;
+      }
+
+      const plan = await readPlanTodos(state.projectRoot);
+      if (!plan || plan.tasks.length === 0) {
+        ctx.ui.notify(
+          "📝 暂无 TODO。使用 /skill:writing-plans 生成实现计划。",
+          "info",
+        );
+        return;
+      }
+
+      const pending = plan.tasks.filter((t) => !t.done);
+      const done = plan.tasks.filter((t) => t.done);
+
+      const lines: string[] = [];
+      lines.push(`## 📝 TODO — ${plan.file}`);
+      lines.push("");
+
+      if (pending.length > 0) {
+        lines.push(`### ☐ 待完成 (${pending.length})`);
+        for (let i = 0; i < pending.length; i++) {
+          lines.push(`${i + 1}. ${pending[i].text}`);
+        }
+        lines.push("");
+      }
+
+      if (done.length > 0) {
+        lines.push(`### ✅ 已完成 (${done.length})`);
+        for (let i = 0; i < done.length; i++) {
+          lines.push(`${i + 1}. ~~${done[i].text}~~`);
+        }
+        lines.push("");
+      }
+
+      if (state.currentTask) {
+        lines.push(`---`);
+        lines.push(`🎯 当前任务: **${state.currentTask}**`);
+        lines.push(`> 仅完成当前任务，不要跳到下一步。`);
+      }
 
       ctx.ui.notify(lines.join("\n"), "info");
     },
