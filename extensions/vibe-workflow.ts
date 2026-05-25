@@ -1320,57 +1320,6 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event, ctx) => {
     if (!state.enabled) return;
 
-    // 🆕 v5.7: 自动识图 — 解析 @路径引用，扩展自己跑 mmx vision describe，结果注入给 LLM
-    if (event.prompt && event.prompt.includes("@")) {
-      const imageRefs = event.prompt.match(/@([^\s]+assets\/pasted\/[^\s]+)/g);
-      if (imageRefs && imageRefs.length > 0) {
-        const paths = imageRefs.map((ref) => ref.slice(1)); // 去掉 @
-        const uniquePaths = [...new Set(paths)]; // 去重
-
-        ctx.ui.notify(`🔍 正在识别 ${uniquePaths.length} 张图片...`, "info");
-
-        const results = await Promise.allSettled(
-          uniquePaths.map(async (imgPath) => {
-            const fullPath = path.resolve(state.projectRoot || ctx.cwd, imgPath);
-            if (!fs.existsSync(fullPath)) return `[Image not found: ${imgPath}]`;
-
-            const result = await pi.exec("mmx", ["vision", "describe", fullPath], {
-              timeout: 30_000,
-            });
-
-            if (result.exitCode !== 0) {
-              return `[Image describe failed: ${imgPath}]\n${result.stderr || "unknown error"}`;
-            }
-
-            // mmx 返回 JSON，提取 content 字段
-            try {
-              const parsed = JSON.parse(result.stdout);
-              if (parsed.content) return `[Image: ${path.basename(imgPath)}]\n${parsed.content}`;
-              return `[Image: ${path.basename(imgPath)}]\n${result.stdout}`;
-            } catch {
-              return `[Image: ${path.basename(imgPath)}]\n${result.stdout}`;
-            }
-          }),
-        );
-
-        const descriptions = results
-          .filter((r) => r.status === "fulfilled")
-          .map((r) => (r as PromiseFulfilledResult<string>).value)
-          .join("\n\n");
-
-        if (descriptions) {
-          ctx.ui.notify(`✅ 已识别 ${uniquePaths.length} 张图片`, "info");
-          return {
-            message: {
-              customType: EXT_NAME + "-vision",
-              content: descriptions,
-              display: false,
-            },
-          };
-        }
-      }
-    }
-
     const mode = getInjectionMode(ctx);
 
     // none 模式：完全不注入
