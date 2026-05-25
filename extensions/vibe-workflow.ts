@@ -1270,6 +1270,8 @@ export default function (pi: ExtensionAPI) {
       const doc = await loadSessionDoc(state.projectRoot, state);
       doc.status = "in-progress";
       await writeSessionDoc(state.projectRoot, state, doc);
+      // v5.6: 每次 turn 结束刷新面板（防止 pi UI 重置）
+      refreshWidget(ctx);
     } catch {
       // 静默失败，不影响主流程
     }
