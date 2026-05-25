@@ -3567,7 +3567,10 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("vibe-paste", {
     description:
       "从 Windows 剪贴板粘贴图片（WSL 兼容，自动保存并注入到会话）",
-    handler: async (_args, ctx) => {
+    handler: async (args, ctx) => {
+      // 用户附加的文本（/vibe-paste 后面的内容）
+      const userText = args?.trim() || "";
+
       // 检查是否有图片
       const checkCmd = [
         "-Command",
@@ -3634,7 +3637,7 @@ export default function (pi: ExtensionAPI) {
         // 多模态模型（如 Mimo）：直接发送图片数据
         const imgData = await fsPromises.readFile(wslPath);
         pi.sendUserMessage([
-          { type: "text" as const, text: `[📷 Image pasted: \`${relativePath}\`]` },
+          { type: "text" as const, text: `[📷 Image pasted: \`${relativePath}\`]${userText ? "\n" + userText : ""}` },
           {
             type: "image" as const,
             source: {
@@ -3652,7 +3655,7 @@ export default function (pi: ExtensionAPI) {
       } else {
         // 纯文本模型（如 DeepSeek）：发送文本引用，LLM 通过工具识图
         pi.sendUserMessage(
-          `[📷 Image pasted: \`${relativePath}\`] Use \`minimax_describe_image\` tool to analyze it.`,
+          `[📷 Image pasted: \`${relativePath}\`] Use \`minimax_describe_image\` tool to analyze it.${userText ? "\n" + userText : ""}`,
         );
 
         ctx.ui.notify(
