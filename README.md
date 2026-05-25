@@ -491,6 +491,22 @@ Squash 前必须确认:
 
 ## 目录结构
 
+> ⚠️ **关键：所有 vibe 文件必须和 `.git` 在同一目录下。**
+>
+> `projectRoot` = `git rev-parse --show-toplevel` 的结果。
+> `/vibe-init` 在哪个目录运行，`docs/vibe/` 和 `AGENTS.md` 就创建在哪。
+>
+> ```
+> ✅ 正确: cd your-project && pi && /vibe-init
+>    your-project/
+>    ├── .git/
+>    ├── AGENTS.md        ← /vibe-init 创建
+>    └── docs/vibe/        ← /vibe-init 创建
+>
+> ❌ 错误: cd ~ && pi && /vibe-init （~ 不是 git repo）
+> ❌ 错误: 在子目录运行 pi，然后 /vibe-init 创建在了父目录
+> ```
+
 ```
 your-project/
 │
