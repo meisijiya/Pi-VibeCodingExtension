@@ -809,6 +809,11 @@ async function buildContextInjection(
   lines.push(
     "- Use \`vibe_status\` to check workflow state at any time.",
   );
+  lines.push("");
+  lines.push("**Coding principles (Karpathy):**");
+  lines.push("- Simplicity first: minimum code, no speculative features");
+  lines.push("- Surgical changes: touch only what you must, match existing style");
+  lines.push("- Goal-driven: define verifiable success criteria before starting");
 
   return lines.join("\n");
 }

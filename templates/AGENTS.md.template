@@ -36,6 +36,15 @@
   这些会被 vibe-workflow 扩展解析并注入上下文
 -->
 
+### 🧠 行为准则（Karpathy's Principles）
+
+<!-- 通用编程行为准则，减少 LLM 常见错误 -->
+- **Simplicity First**: 最小代码解决问题，不加投机功能。200 行能变 50 行就重写
+- **Surgical Changes**: 只改必须改的代码，不"顺手优化"无关代码
+- **Goal-Driven**: 开始前定义可验证的成功标准，循环直到通过
+- **Think Before Coding**: 先陈述假设，暴露不确定，多解释时列出选项
+- **Match Existing Style**: 遵循项目现有风格，不一致时提出来但不要擅改
+
 ### 代码约束
 - **所有函数必须添加函数级注释**（简述功能、参数、返回值）
 - 不要修改 `package.json` 除非用户明确要求
