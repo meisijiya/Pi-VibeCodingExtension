@@ -1161,20 +1161,16 @@ export default function (pi: ExtensionAPI) {
       // 当前任务
       lines.push(`📋 ${state.currentTask || "_(/vibe-task 设置)_"}`);
 
-      // TODO 列表摘要
+      // TODO 列表摘要（不展示内容，避免面板过长）
       if (plan && plan.tasks.length > 0) {
         const pending = plan.tasks.filter((t) => !t.done);
         const done = plan.tasks.filter((t) => t.done);
+        const progress = plan.tasks.length > 0
+          ? ` ${Math.round((done.length / plan.tasks.length) * 100)}%`
+          : "";
         lines.push(
-          `📝 TODO: ${pending.length} 待完成 / ${plan.tasks.length} 总计  │  /vibe-todo 查看全部`,
+          `📝 TODO: ${pending.length} 待完成 / ${plan.tasks.length} 总计${progress}  │  /vibe-todo 查看全部`,
         );
-        // 只显示前 2 个待完成项
-        for (const t of pending.slice(0, 2)) {
-          lines.push(`   ☐ ${t.text.slice(0, 60)}${t.text.length > 60 ? "..." : ""}`);
-        }
-        if (pending.length > 2) {
-          lines.push(`   ... 还有 ${pending.length - 2} 项（/vibe-todo 查看全部）`);
-        }
       } else {
         lines.push(`📝 TODO: _(/skill:writing-plans 生成计划)_`);
       }
