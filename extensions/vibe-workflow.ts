@@ -814,6 +814,10 @@ async function buildContextInjection(
   lines.push("- Simplicity first: minimum code, no speculative features");
   lines.push("- Surgical changes: touch only what you must, match existing style");
   lines.push("- Goal-driven: define verifiable success criteria before starting");
+  lines.push("");
+  lines.push(
+    "**Tools:** Use \`context7_resolve\` + \`context7_docs\` for latest official API docs before writing library code.",
+  );
 
   return lines.join("\n");
 }
