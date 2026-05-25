@@ -1119,6 +1119,13 @@ export default function (pi: ExtensionAPI) {
       const model = ctx.model;
       if (!model) return "full";
       const modelId = model.id.toLowerCase();
+      const contextWindow = model.contextWindow || 200000;
+
+      // 小上下文模型（< 300K）：精简注入，防溢出
+      if (contextWindow < 300000) {
+        return "minimal";
+      }
+
       // 主力模型：注入全量上下文
       if (
         modelId.includes("deepseek") ||
@@ -1129,7 +1136,7 @@ export default function (pi: ExtensionAPI) {
       ) {
         return "full";
       }
-      // 工具模型（mimo 多模态、minimax 生成）：不注入 vibe 状态
+      // 工具模型（mimo 多模态、minimax 生成）：精简
       if (
         modelId.includes("mimo") ||
         modelId.includes("minimax") ||
@@ -1139,7 +1146,7 @@ export default function (pi: ExtensionAPI) {
         return "minimal";
       }
     } catch {
-      // 无法获取模型信息，默认全量
+      return "full";
     }
     return "full";
   }
@@ -3341,10 +3348,10 @@ export default function (pi: ExtensionAPI) {
 
   /** 预定义模型别名（根据用户实际模型列表配置） */
   const MODEL_ALIASES: Record<string, { provider: string; pattern: string; desc: string }> = {
-    pro: { provider: "opencode-go", pattern: "deepseek-v4-pro", desc: "主力思考" },
-    flash: { provider: "opencode-go", pattern: "deepseek-v4-flash", desc: "快速/便宜" },
-    review: { provider: "minimax-cn", pattern: "MiniMax-M2.7", desc: "代码审查" },
-    mimo: { provider: "opencode-go", pattern: "mimo-v2.5", desc: "多模态识图" },
+    pro: { provider: "opencode-go", pattern: "deepseek-v4-pro", desc: "主力思考 · 1M ctx" },
+    flash: { provider: "opencode-go", pattern: "deepseek-v4-flash", desc: "日常任务 · 1M ctx" },
+    mmx: { provider: "minimax-cn", pattern: "MiniMax-M2.7", desc: "简单任务 · 256K ctx ⚠️" },
+    mimo: { provider: "opencode-go", pattern: "mimo-v2.5", desc: "多模态识图 · 1M ctx" },
   };
 
   /** 记录切换前的模型，用于 /vibe-model back */
@@ -3435,8 +3442,14 @@ export default function (pi: ExtensionAPI) {
       await pi.setModel(model);
       lastInjectedStateHash = "";
 
+      // 小上下文模型提醒
+      const ctxSize = (model.contextWindow || 200000) / 1000;
+      const sizeHint = ctxSize < 300
+        ? `\n⚠️  ${ctxSize.toFixed(0)}K 上下文较小，建议短任务。用 /vibe-status 监控用量。`
+        : "";
+
       ctx.ui.notify(
-        `🧠 已切换: \`${model.provider}/${model.id}\` (${info.desc})\n切回: /vibe-model back`,
+        `🧠 已切换: \`${model.provider}/${model.id}\` (${info.desc})${sizeHint}\n切回: /vibe-model back`,
         "info",
       );
     },
