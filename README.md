@@ -783,9 +783,10 @@ ls ~/.agents/skills/
 | v3.0 | Per-file diff + 智能 auto-checkpoint | 1950 行 |
 | v4.0 | Squash/Rollback/Branch/Merge/Release | 2548 行 |
 | v5.0 | 模型感知上下文 + 多模态切换 | 2849 行 |
-| **v5.4** | **全家桶：smart_search + Context7 + 精简** | **3400+ 行 · 2 extensions** |
+| v5.4 | smart_search + Context7 + 全家桶打包 | ~3400 行 |
+| **v5.6** | **面板 TODO 联动 + /vibe-model + /vibe-paste + 压缩前 checkpoint** | **~3600 行 · 20 commands · 11 hooks** |
 
-> 安装即得：`extensions/vibe-workflow.ts` + `extensions/pi-context7.ts`
+> `pi install git:github.com/meisijiya/Pi-VibeCodingExtension` 一键安装全部。
 
 > 10 hooks · 18 commands · 5 LLM tools · 全覆盖的 Vibe Coding 工作流
 
