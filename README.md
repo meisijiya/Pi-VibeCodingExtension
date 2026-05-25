@@ -94,6 +94,7 @@ pi
 |------|------|------|
 | `/vibe-mimo` | 切换到原生多模态模型（兜底） | `/vibe-mimo` → 贴图 → `/vibe-mimo --back` |
 | `/vibe-minimax` | MiniMax CLI 工具（识图/搜索/生成） | `/vibe-minimax setup` |
+| `/vibe-paste` | 从剪贴板粘贴图片（WSL 兼容） | `/vibe-paste` |
 
 | LLM 工具 | 触发方式 | 用途 |
 |----------|---------|------|
