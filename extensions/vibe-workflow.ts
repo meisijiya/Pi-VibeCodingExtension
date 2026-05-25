@@ -3343,8 +3343,7 @@ export default function (pi: ExtensionAPI) {
   const MODEL_ALIASES: Record<string, { provider: string; pattern: string; desc: string }> = {
     pro: { provider: "opencode-go", pattern: "deepseek-v4-pro", desc: "主力思考" },
     flash: { provider: "opencode-go", pattern: "deepseek-v4-flash", desc: "快速/便宜" },
-    review: { provider: "opencode-go", pattern: "minimax-m2.7", desc: "代码审查" },
-    mini: { provider: "opencode-go", pattern: "minimax-m2.5", desc: "轻量任务" },
+    review: { provider: "minimax-cn", pattern: "MiniMax-M2.7", desc: "代码审查" },
     mimo: { provider: "opencode-go", pattern: "mimo-v2.5", desc: "多模态识图" },
   };
 
