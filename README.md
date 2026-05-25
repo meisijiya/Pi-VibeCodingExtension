@@ -32,6 +32,7 @@
 - [行为准则](#行为准则-karpathys-principles)
 - [目录结构](#目录结构)
 - [上下文注入策略](#上下文注入策略)
+  - [多模型协作](#多模型协作)
 - [安装方式](#安装方式)
 
 ---
@@ -87,6 +88,7 @@ pi
 | `/vibe-plan` | 桥接 /skill:writing-plans 生成计划 | `/vibe-plan` |
 | `/vibe-metrics` | 工作流统计面板 | `/vibe-metrics` |
 | `/vibe-autocheckpoint` | 开启/关闭自动 checkpoint | `/vibe-autocheckpoint off` |
+| `/vibe-model` | 快速切换模型（pro/flash/mmx/mimo/back） | `/vibe-model flash` |
 
 ### 🖼️ 多模态 + MiniMax
 
@@ -565,6 +567,19 @@ your-project/
 | 3️⃣ 兜底 | pi 内置自动压缩 + `/compact` 手动压缩 | 溢出也能恢复 |
 
 **实际操作建议：** 每 3-5 个 checkpoint 跑一次 `/vibe-status`。接近 60% 时 `/vibe-handoff` → `/new` → `/vibe-enable` 无缝交接；接近 80% 时可手动 `/compact`。
+
+### 多模型协作
+
+通过 `/vibe-model` 在 DeepSeek v4-pro（主力思考）、DeepSeek v4-flash（日常任务）、MiniMax M2.7（简单任务）之间快速切换，节省 Token 成本。
+
+```bash
+/vibe-model pro    # DeepSeek v4-pro · 1M ctx   主力思考
+/vibe-model flash  # DeepSeek v4-flash · 1M ctx  日常任务
+/vibe-model mmx    # MiniMax M2.7 · 256K ctx ⚠️  简单任务
+/vibe-model back   # 切回上一个模型
+```
+
+**上下文自动适配：** 大上下文模型（≥300K）注入全量 vibe 上下文；小上下文模型（如 MiniMax 256K）自动降级为精简注入（~50 tokens），防止溢出。切换模型时显示上下文大小提醒。
 
 ---
 
