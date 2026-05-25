@@ -29,6 +29,7 @@
 - [场景5：发布 Release](#场景5发布-release)
 - [场景6：出错回滚 + 提交整理](#场景6出错回滚--提交整理)
 - [Skills 参考](#skills-参考)
+- [行为准则](#行为准则-karpathys-principles)
 - [目录结构](#目录结构)
 - [上下文注入策略](#上下文注入策略)
 - [安装方式](#安装方式)
@@ -705,6 +706,33 @@ rm -rf /tmp/sp
 # 验证
 ls ~/.agents/skills/
 ```
+
+---
+
+## 行为准则（Karpathy's Principles）
+
+> 整合自 [Andrej Karpathy 的 LLM 编程观察](https://github.com/multica-ai/andrej-karpathy-skills)（15 万 stars），作为 vibe workflow 的「心法」层。
+
+我们提供框架（任务边界、checkpoint、上下文），Karpathy 提供品味（怎么写、怎么改、怎么想）。两者互补：
+
+| 我们的规则（框架） | Karpathy 原则（心法） |
+|-------------------|---------------------|
+| 不要扩展范围 | **Simplicity First** — 最小代码，不加投机功能 |
+| 单任务聚焦 | **Surgical Changes** — 只改必须改的，不碰无关代码 |
+| 完成后提交 | **Goal-Driven** — 先定义可验证成功标准，再动手 |
+| 函数级注释 | **Think Before Coding** — 先陈述假设，暴露不确定 |
+
+### 注入方式
+
+**动态注入**（vibe context，每次对话）：
+```
+**Coding principles (Karpathy):**
+- Simplicity first: minimum code, no speculative features
+- Surgical changes: touch only what you must, match existing style
+- Goal-driven: define verifiable success criteria before starting
+```
+
+**静态约束**（AGENTS.md 模板）：完整 5 条原则写入项目宪法。
 
 ---
 
