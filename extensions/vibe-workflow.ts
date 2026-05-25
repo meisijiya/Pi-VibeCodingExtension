@@ -822,9 +822,6 @@ async function buildContextInjection(
   lines.push(
     "- Use built-in \`grep\` for exact matches. If no results, use \`smart_search\` for broader search.",
   );
-  lines.push(
-    "- Use \`github_search\` to find real-world code examples from open source repos.",
-  );
 
   return lines.join("\n");
 }
