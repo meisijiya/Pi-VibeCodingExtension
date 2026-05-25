@@ -594,16 +594,46 @@ your-project/
 
 ### 多模型协作
 
-通过 `/vibe-model` 在 DeepSeek v4-pro（主力思考）、DeepSeek v4-flash（日常任务）、MiniMax M2.7（简单任务）之间快速切换，节省 Token 成本。
+通过 `/vibe-model` 在不同模型间快速切换，按任务复杂度分配模型，节省 Token 成本。
+
+#### 模型能力边界
+
+| 别名 | 模型 | 上下文 | 擅长 | 不擅长 |
+|------|------|--------|------|--------|
+| `pro` | DeepSeek v4-pro | 1M | 架构设计、复杂逻辑、长篇推理 | 简单代码生成（浪费） |
+| `flash` | DeepSeek v4-flash | 1M | 日常编码、类型定义、简单 CRUD | 需要深度思考的设计 |
+| `mmx` | MiniMax M2.7 | 256K ⚠️ | 代码审查、简短问答、格式转换 | 大项目理解、长上下文任务 |
+
+#### 推荐用法
 
 ```bash
-/vibe-model pro    # DeepSeek v4-pro · 1M ctx   主力思考
-/vibe-model flash  # DeepSeek v4-flash · 1M ctx  日常任务
-/vibe-model mmx    # MiniMax M2.7 · 256K ctx ⚠️  简单任务
+/vibe-model pro    # 设计数据库 schema、架构方案
+/vibe-model flash  # 写 CRUD、生成类型、配置文件
+/vibe-model mmx    # 审查代码、简短重构、文档生成
 /vibe-model back   # 切回上一个模型
 ```
 
-**上下文自动适配：** 大上下文模型（≥300K）注入全量 vibe 上下文；小上下文模型（如 MiniMax 256K）自动降级为精简注入（~50 tokens），防止溢出。切换模型时显示上下文大小提醒。
+#### Plan 中标注模型建议
+
+`/vibe-plan` 生成的 plan 可包含模型推荐，面板自动显示：
+
+```markdown
+- [ ] Step 1: 创建 LoginForm 组件 💡flash
+- [ ] Step 2: 实现 JWT 鉴权 💡pro
+- [ ] Step 3: 审查代码 💡mmx
+```
+
+```
+面板 → 📋 实现 JWT 鉴权  💡 /vibe-model pro
+```
+
+#### 上下文注入策略
+
+| 模型 | 注入模式 | Token | 原因 |
+|------|---------|-------|------|
+| pro / flash (1M) | **Full** | ~300 | 大窗口，全量注入 |
+| mmx (256K) | **Minimal** | ~50 | 小窗口，防溢出 |
+| Mimo (1M) | **Minimal** | ~50 | 识图工具，不需要工作流状态 |
 
 ---
 

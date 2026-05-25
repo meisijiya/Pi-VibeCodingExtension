@@ -2090,8 +2090,11 @@ export default function (pi: ExtensionAPI) {
       }
 
       contextParts.push(`【可用模型: pro(主力思考), flash(日常任务), mmx(MiniMax简单任务)】`);
+      contextParts.push(`【模型能力边界:】`);
+      contextParts.push(`【  pro: DeepSeek v4-pro · 1M上下文 · 擅长架构设计、复杂逻辑】`);
+      contextParts.push(`【  flash: DeepSeek v4-flash · 1M上下文 · 擅长代码生成、CRUD、类型定义】`);
+      contextParts.push(`【  mmx: MiniMax M2.7 · 256K上下文 · 擅长代码审查、简短问答、格式转换】`);
       contextParts.push(`【每个 Step 末尾标注推荐模型: 💡pro / 💡flash / 💡mmx】`);
-      contextParts.push(`【简单代码生成→flash, 复杂设计→pro, 代码审查→mmx】`);
 
       const skillArgs = contextParts.join(" ");
       pi.sendUserMessage(
