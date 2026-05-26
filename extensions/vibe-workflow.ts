@@ -54,7 +54,7 @@ import { Type } from "typebox";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import * as fsPromises from "node:fs/promises";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 
 /** 工作流持久化状态（通过 pi.appendEntry 持久化，不参与 LLM 上下文） */
 interface VibeState {
@@ -133,11 +133,12 @@ const MAX_DIFF_SIZE_BYTES = 30_000; // 30KB
 
 /**
  * 同步执行 git 命令，返回 stdout。失败返回 null。
- * 封装 execSync 以统一错误处理。
+ * 使用 execFileSync 而非 execSync，因为 execSync 不接受参数数组。
+ * 对比：execSync("git", args, opts) 会将 args 当作 options，导致 git 无子命令运行失败。
  */
 function gitExec(cwd: string, args: string[]): string | null {
   try {
-    return execSync("git", args, {
+    return execFileSync("git", args, {
       cwd,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
