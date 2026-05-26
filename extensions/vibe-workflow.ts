@@ -801,6 +801,9 @@ async function buildContextInjection(
   lines.push(
     "- After completing the current task, call \`vibe_checkpoint\` to commit & update docs",
   );
+  lines.push(
+    "- 🚫 Do NOT use manual git commands (\`git add\`, \`git commit\`, \`git push\`) for committing. Always use the \`vibe_checkpoint\` tool instead.",
+  );
   // 当用户设置了 task 时，强化单任务约束
   if (state.currentTask) {
     lines.push(
@@ -830,6 +833,12 @@ async function buildContextInjection(
   lines.push("- Goal-driven: define verifiable success criteria before starting");
   lines.push("");
   lines.push("**Tools:**");
+  lines.push(
+    "- Use \`vibe_checkpoint\` to commit changes (git commit + update tracking docs). Call this instead of manual git commands.",
+  );
+  lines.push(
+    "- Use \`vibe_status\` to check current workflow state (task, checkpoints, uncommitted files).",
+  );
   lines.push(
     "- Use \`context7_resolve\` + \`context7_docs\` for latest official API docs before writing library code.",
   );
