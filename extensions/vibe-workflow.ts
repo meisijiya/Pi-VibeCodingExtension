@@ -847,6 +847,8 @@ async function executeCheckpoint(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   state: VibeState,
+  metrics: VibeMetrics,
+  refreshWidget: (ctx: ExtensionContext) => void,
   message?: string,
 ): Promise<{ success: boolean; message: string }> {
   const projectRoot = state.projectRoot;
@@ -1385,7 +1387,7 @@ export default function (pi: ExtensionAPI) {
 
     // 自动 checkpoint（不留确认，压缩是自动触发的）
     try {
-      const result = await executeCheckpoint(pi, ctx, state, "auto: pre-compaction checkpoint");
+      const result = await executeCheckpoint(pi, ctx, state, metrics, refreshWidget, "auto: pre-compaction checkpoint");
       if (ctx.hasUI && result.success) {
         ctx.ui.notify(
           `📦 Pre-compaction checkpoint: ${changedFiles.length} file(s) saved to git`,
@@ -1894,7 +1896,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const result = await executeCheckpoint(pi, ctx, state);
+      const result = await executeCheckpoint(pi, ctx, state, metrics, refreshWidget);
       ctx.ui.notify(result.message, result.success ? "info" : "warning");
     },
   });
@@ -2690,7 +2692,7 @@ export default function (pi: ExtensionAPI) {
             ],
           );
           if (!choice || choice === "Cancel") return;
-          await executeCheckpoint(pi, ctx, state);
+          await executeCheckpoint(pi, ctx, state, metrics, refreshWidget);
         } else {
           ctx.ui.notify(
             "⚠️ 有未提交变更，请先运行 /vibe-checkpoint",
@@ -2900,7 +2902,7 @@ export default function (pi: ExtensionAPI) {
             ["Auto-checkpoint then release", "Cancel"],
           );
           if (!choice || choice === "Cancel") return;
-          await executeCheckpoint(pi, ctx, state);
+          await executeCheckpoint(pi, ctx, state, metrics, refreshWidget);
         } else {
           ctx.ui.notify(
             "⚠️ 有未提交变更，请先运行 /vibe-checkpoint",
@@ -3258,6 +3260,8 @@ export default function (pi: ExtensionAPI) {
         pi,
         ctx,
         state,
+        metrics,
+        refreshWidget,
         params.message,
       );
 
