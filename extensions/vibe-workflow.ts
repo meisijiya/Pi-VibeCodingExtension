@@ -2270,7 +2270,9 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("⚠️ Vibe 工作流未启用", "warning");
         return;
       }
-      if (!isGitRepo(state.projectRoot)) {
+      // 用当前目录而非 state.projectRoot（用户可能已 cd 到不同项目）
+      const currentRoot = findProjectRoot(ctx.cwd);
+      if (!isGitRepo(currentRoot)) {
         ctx.ui.notify("⚠️ 非 Git 仓库", "warning");
         return;
       }
