@@ -1195,8 +1195,11 @@ async function updatePlanCheckbox(
         return true;
       }
     }
-  } catch {
-    // 目录不存在或其他错误
+  } catch (err) {
+    // 目录不存在时静默返回 false，其他错误 log 后返回 false
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.error("[vibe] updatePlanCheckbox failed:", err);
+    }
   }
   return false;
 }
@@ -3508,25 +3511,27 @@ export default function (pi: ExtensionAPI) {
       "完成任务后调用此工具。行为取决于 completedStep 参数：" +
       "① 如果提供了 completedStep → 只更新 plan 中的 checkbox，不 commit（除非该 task 的所有 step 都已完成）；" +
       "② 如果不提供 completedStep 或 task 全部完成 → 执行 git commit + 更新 session 文档。" +
-      " ⚠️ 你必须通过 message 参数提供有意义的 commit message。",
+      " 建议通过 message 参数提供有意义的 commit message。",
     promptSnippet:
       "Mark step done or commit completed task",
     promptGuidelines: [
       "When you finish a SINGLE step: call vibe_checkpoint with completedStep to mark the checkbox. No git commit happens.",
       "When you finish the LAST step of a task: call vibe_checkpoint with completedStep. The plugin auto-detects task completion and triggers git commit.",
       "When there is no plan or you want to force commit: call vibe_checkpoint without completedStep.",
-      "MANDATORY: Always provide a clear, descriptive commit message via the message parameter.",
-      "MANDATORY: completedStep should match the step text in the plan file. Read the plan first, then use the exact text (e.g., 'Step 2: 编写 JWT 工具和密码哈希'). If the user set a task like 'task5-1', that means Task 5 Step 1 — find it in the plan and use the plan's step text.",
+      "Recommended: Provide a clear, descriptive commit message via the message parameter. If omitted, an auto-generated message is used.",
+      "completedStep should match the step text in the plan file. Read the plan first, then use the exact text (e.g., 'Step 2: 编写 JWT 工具和密码哈希'). If the user set a task like 'task5-1', that means Task 5 Step 1 — find it in the plan and use the plan's step text.",
     ],
     parameters: Type.Object({
-      message: Type.String({
-        description:
-          "必填。用一句话描述本次改动内容（英文或中文均可）。例如: 'feat: add user registration endpoint' 或 '创建 requirements.txt 和 .env.example'",
-      }),
+      message: Type.Optional(
+        Type.String({
+          description:
+            "用一句话描述本次改动内容。例如: 'feat: add user registration endpoint'。不提供则自动生成。",
+        }),
+      ),
       completedStep: Type.Optional(
         Type.String({
           description:
-            "你刚完成的 plan step 的完整标题，用于更新 plan 文件中的 checkbox。例如: 'Step 4: 创建 auth-api/app/__init__.py'。必须与 plan 文件中的 step 标题完全匹配。",
+            "你刚完成的 plan step 标题，用于更新 plan 文件中的 checkbox。例如: 'Step 4: 创建 auth-api/app/__init__.py' 或 'task5-1'。",
         }),
       ),
     }),
