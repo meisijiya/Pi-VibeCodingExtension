@@ -47,6 +47,7 @@ pi install git:github.com/meisijiya/Pi-VibeCodingExtension
 cd your-project
 pi
 /vibe-init       # 创建 docs/vibe/ 目录 + AGENTS.md 模板
+/vibe-install-skills  # 安装配套 skills（首次使用）
 /vibe-enable     # 启用工作流
 
 # 3. 开始工作
@@ -83,6 +84,7 @@ Task 5: 安全工具（JWT + 密码）
 | 命令 | 用途 | 示例 |
 |------|------|------|
 | `/vibe-init` | 初始化项目（创建目录 + AGENTS.md 模板） | `/vibe-init` |
+| `/vibe-install-skills` | 安装配套 skills（writing-plans、executing-plans 等） | `/vibe-install-skills` |
 | `/vibe-enable` | 启用工作流（开始上下文注入） | `/vibe-enable` |
 | `/vibe-disable` | 禁用工作流 | `/vibe-disable` |
 | `/vibe-task <name>` | 设置当前任务（支持智能匹配：`task5-1`、`5-1`、`step2`） | `/vibe-task task5-1` |

@@ -2075,9 +2075,70 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(
         "✅ Vibe 工作流初始化完成！\n" +
           `   目录: ${VIBE_DIR}/\n` +
-          "   运行 /vibe-enable 启用工作流",
+          "   运行 /vibe-enable 启用工作流\n" +
+          "   运行 /vibe-install-skills 安装配套 skills",
         "info",
       );
+    },
+  });
+
+  /**
+   * /vibe-install-skills — 安装配套 skills 到用户级目录
+   */
+  pi.registerCommand("vibe-install-skills", {
+    description: "安装 vibe-workflow 配套 skills（writing-plans、executing-plans、subagent-driven-development）",
+    handler: async (_args, ctx) => {
+      const projectRoot = findProjectRoot(ctx.cwd);
+      const agentsSkillsDir = path.join(
+        process.env.HOME || "~",
+        ".agents",
+        "skills",
+      );
+
+      // skills 源目录（插件包内）
+      const packageDir = path.dirname(path.dirname(new URL(import.meta.url).pathname));
+      const skillsSrcDir = path.join(packageDir, "skills");
+
+      const skillsToInstall = [
+        "executing-plans",
+        "subagent-driven-development",
+        "writing-plans",
+      ];
+
+      let installed = 0;
+      for (const skill of skillsToInstall) {
+        const srcDir = path.join(skillsSrcDir, skill);
+        const dstDir = path.join(agentsSkillsDir, skill);
+
+        if (!fs.existsSync(srcDir)) {
+          continue;
+        }
+
+        await ensureDir(dstDir);
+
+        // 复制所有 .md 文件
+        const files = fs.readdirSync(srcDir).filter((f) => f.endsWith(".md"));
+        for (const file of files) {
+          const src = path.join(srcDir, file);
+          const dst = path.join(dstDir, file);
+          fs.copyFileSync(src, dst);
+          installed++;
+        }
+      }
+
+      if (installed > 0) {
+        ctx.ui.notify(
+          `✅ Skills 安装完成！\n` +
+            `   已安装 ${installed} 个文件到 ${agentsSkillsDir}/\n` +
+            `   Skills: ${skillsToInstall.join(", ")}`,
+          "info",
+        );
+      } else {
+        ctx.ui.notify(
+          "⚠️ 未找到 skills 文件。请确保插件包包含 skills/ 目录。",
+          "warning",
+        );
+      }
     },
   });
 
@@ -3496,16 +3557,76 @@ export default function (pi: ExtensionAPI) {
       });
 
       ctx.ui.notify(
-        `✅ MiniMax CLI 完成\n` +
-          `   输出: ${outputDir}\n` +
-          `   结果已注入到会话上下文`,
+        "✅ Vibe 工作流初始化完成！\n" +
+          `   目录: ${VIBE_DIR}/\n` +
+          "   运行 /vibe-enable 启用工作流\n" +
+          "   运行 /vibe-install-skills 安装配套 skills",
         "info",
       );
     },
   });
 
   /**
-   * vibe_checkpoint — LLM 完成任务后调用，触发 git commit
+   * /vibe-install-skills — 安装配套 skills 到用户级目录
+   */
+  pi.registerCommand("vibe-install-skills", {
+    description: "安装 vibe-workflow 配套 skills（writing-plans、executing-plans、subagent-driven-development）",
+    handler: async (_args, ctx) => {
+      const agentsSkillsDir = path.join(
+        process.env.HOME || "~",
+        ".agents",
+        "skills",
+      );
+
+      // skills 源目录（插件包内）
+      const packageDir = path.dirname(path.dirname(new URL(import.meta.url).pathname));
+      const skillsSrcDir = path.join(packageDir, "skills");
+
+      const skillsToInstall = [
+        "executing-plans",
+        "subagent-driven-development",
+        "writing-plans",
+      ];
+
+      let installed = 0;
+      for (const skill of skillsToInstall) {
+        const srcDir = path.join(skillsSrcDir, skill);
+        const dstDir = path.join(agentsSkillsDir, skill);
+
+        if (!fs.existsSync(srcDir)) {
+          continue;
+        }
+
+        await ensureDir(dstDir);
+
+        // 复制所有 .md 文件
+        const files = fs.readdirSync(srcDir).filter((f) => f.endsWith(".md"));
+        for (const file of files) {
+          const src = path.join(srcDir, file);
+          const dst = path.join(dstDir, file);
+          fs.copyFileSync(src, dst);
+          installed++;
+        }
+      }
+
+      if (installed > 0) {
+        ctx.ui.notify(
+          `✅ Skills 安装完成！\n` +
+            `   已安装 ${installed} 个文件到 ${agentsSkillsDir}/\n` +
+            `   Skills: ${skillsToInstall.join(", ")}`,
+          "info",
+        );
+      } else {
+        ctx.ui.notify(
+          "⚠️ 未找到 skills 文件。请确保插件包包含 skills/ 目录。",
+          "warning",
+        );
+      }
+    },
+  });
+
+  /**
+   * /vibe-enable — 启用 vibe 工作流
    */
   pi.registerTool({
     name: "vibe_checkpoint",

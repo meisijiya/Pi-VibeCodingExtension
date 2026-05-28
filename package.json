@@ -19,7 +19,9 @@
   },
   "homepage": "https://github.com/ljh2923/pi-vibe-workflow#readme",
   "pi": {
-    "extensions": ["./extensions"],
+    "extensions": [
+      "./extensions"
+    ],
     "image": "https://raw.githubusercontent.com/ljh2923/pi-vibe-workflow/main/docs/workflow-diagram.png"
   },
   "peerDependencies": {
@@ -29,6 +31,10 @@
   "files": [
     "extensions/",
     "templates/",
+    "skills/",
     "README.md"
-  ]
+  ],
+  "devDependencies": {
+    "typescript": "^6.0.3"
+  }
 }
