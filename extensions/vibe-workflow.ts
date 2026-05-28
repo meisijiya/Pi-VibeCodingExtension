@@ -2093,17 +2093,19 @@ export default function (pi: ExtensionAPI) {
   });
 
   /**
-   * /vibe-install-skills — 安装配套 skills 到用户级目录
+   * /vibe-install-skills [-l] — 安装配套 skills
+   *   默认：用户级（~/.agents/skills/）
+   *   -l：项目级（<project>/.agents/skills/）
    */
   pi.registerCommand("vibe-install-skills", {
-    description: "安装 vibe-workflow 配套 skills（writing-plans、executing-plans、subagent-driven-development）",
-    handler: async (_args, ctx) => {
+    description: "安装配套 skills（-l 安装到项目级目录）",
+    handler: async (args, ctx) => {
+      const isLocal = args?.trim() === "-l" || args?.trim() === "--local";
       const projectRoot = findProjectRoot(ctx.cwd);
-      const agentsSkillsDir = path.join(
-        process.env.HOME || "~",
-        ".agents",
-        "skills",
-      );
+
+      const agentsSkillsDir = isLocal
+        ? path.join(projectRoot, ".agents", "skills")
+        : path.join(process.env.HOME || "~", ".agents", "skills");
 
       // skills 源目录（插件包内）
       const packageDir = path.dirname(path.dirname(new URL(import.meta.url).pathname));
@@ -2136,9 +2138,10 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
+      const level = isLocal ? "项目级" : "用户级";
       if (installed > 0) {
         ctx.ui.notify(
-          `✅ Skills 安装完成！\n` +
+          `✅ Skills 安装完成（${level}）！\n` +
             `   已安装 ${installed} 个文件到 ${agentsSkillsDir}/\n` +
             `   Skills: ${skillsToInstall.join(", ")}`,
           "info",
