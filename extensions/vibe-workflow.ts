@@ -836,6 +836,9 @@ async function buildContextInjection(
   lines.push(
     `- \`${path.join(VIBE_DIR, "tasks", ACTIVE_TASKS_FILE)}\` — task list & progress`,
   );
+  lines.push(
+    `- \`docs/superpowers/plans/\` — implementation plan with task/step structure (read this to find step text for completedStep)`,
+  );
   lines.push("");
   lines.push("**Rules:**");
   lines.push(
