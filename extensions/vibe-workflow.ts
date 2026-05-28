@@ -267,7 +267,7 @@ function generateSessionId(): string {
  * 获取当前时间的 ISO 字符串
  */
 function getTimestamp(): string {
-  return new Date().toISOString();
+  return new Date().toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).replace(" ", "T");
 }
 
 // =============================================================================
