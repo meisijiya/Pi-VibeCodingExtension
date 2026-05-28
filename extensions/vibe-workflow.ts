@@ -1108,13 +1108,23 @@ async function executeCheckpoint(
   // 10. 持久化状态
   await pi.appendEntry(EXT_NAME, state);
 
+  // 11. Guard: 检查是否所有任务都完成
+  let guardMessage = "";
+  const finalPlan = await readPlanTodos(projectRoot);
+  if (finalPlan && finalPlan.allSteps.length > 0 && finalPlan.allSteps.every((s) => s.done)) {
+    guardMessage =
+      `\n\n🎉 所有任务已完成！\n` +
+      `   下一步: /vibe-merge（合并分支）或 /vibe-squash（压缩提交）`;
+  }
+
   return {
     success: true,
     message:
       `✅ Checkpoint #${checkpointNum} 完成！\n` +
       `   Commit: \`${commitResult.hash}\`\n` +
       `   Files: ${changedFiles.map((f) => `\`${f}\``).join(", ")}\n` +
-      `   Diff: docs/vibe/diffs/last.md`,
+      `   Diff: docs/vibe/diffs/last.md` +
+      guardMessage,
   };
 }
 
@@ -2224,6 +2234,40 @@ export default function (pi: ExtensionAPI) {
 
       refreshWidget(ctx);
       ctx.ui.notify(`📋 当前任务已设为: ${state.currentTask}`, "info");
+    },
+  });
+
+  /**
+   * /vibe-quick-fix [desc] — 快速修复模式：跳过 plan，直接修改 + commit
+   */
+  pi.registerCommand("vibe-quick-fix", {
+    description: "快速修复模式：跳过 plan，直接修改代码并提交",
+    handler: async (args, ctx) => {
+      if (!state.enabled) {
+        state.enabled = true;
+        state.sessionId = generateSessionId();
+        state.checkpointCount = 0;
+        await pi.appendEntry(EXT_NAME, state);
+        if (ctx.hasUI) {
+          ctx.ui.setStatus(EXT_NAME, `vibe: ${state.sessionId}`);
+        }
+      }
+
+      const taskName = args?.trim() || "quick-fix";
+      state.currentTask = taskName;
+      await pi.appendEntry(EXT_NAME, state);
+
+      const doc = await loadSessionDoc(state.projectRoot, state);
+      await updateActiveTasks(state.projectRoot, state, doc);
+      refreshWidget(ctx);
+
+      ctx.ui.notify(
+        `🔧 快速修复模式\n` +
+          `   任务: ${taskName}\n` +
+          `   直接修改代码，完成后调用 vibe_checkpoint 提交\n` +
+          `   无需 plan 或 completedStep`,
+        "info",
+      );
     },
   });
 

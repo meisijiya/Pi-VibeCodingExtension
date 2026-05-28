@@ -1,5 +1,18 @@
 # Changelog
 
+## 5.7.1 (2026-05-28)
+
+### 🛡️ Guard 自动转换 + 快速修复 Preset
+
+**Guard 自动转换：**
+- checkpoint 后自动检查 plan 是否全部完成
+- 全部完成时提示 `/vibe-merge` 或 `/vibe-squash`
+
+**`/vibe-quick-fix` 命令：**
+- 快速修复模式：跳过 plan，直接修改代码并提交
+- 自动启用工作流 + 设置任务
+- 无需 `completedStep` 参数
+
 ## 5.7.0 (2026-05-28)
 
 ### 🎯 Step/Task 分离 + 智能匹配

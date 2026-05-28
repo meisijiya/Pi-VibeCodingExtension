@@ -88,6 +88,7 @@ Task 5: 安全工具（JWT + 密码）
 | `/vibe-enable` | 启用工作流（开始上下文注入） | `/vibe-enable` |
 | `/vibe-disable` | 禁用工作流 | `/vibe-disable` |
 | `/vibe-task <name>` | 设置当前任务（支持智能匹配：`task5-1`、`5-1`、`step2`） | `/vibe-task task5-1` |
+| `/vibe-quick-fix [desc]` | 快速修复模式：跳过 plan，直接修改 + commit | `/vibe-quick-fix 修复登录bug` |
 | `/vibe-checkpoint` | 提交变更 + 更新文档 | `/vibe-checkpoint` |
 | `/vibe-status` | 查看状态 + 上下文用量 + 压缩建议 | `/vibe-status` |
 | `/vibe-handoff` | 生成交接文档 + 自动触发 /skill:handoff | `/vibe-handoff` |
