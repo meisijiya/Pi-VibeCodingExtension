@@ -102,6 +102,10 @@ Task 5: 安全工具（JWT + 密码）
 | `/vibe-merge` | 合并当前分支回主分支 | `/vibe-merge` |
 | `/vibe-squash [N]` | 压缩 N 个 checkpoint → 1 个 clean commit | `/vibe-squash 5` |
 | `/vibe-rollback [N]` | 回滚到指定 checkpoint（自动备份） | `/vibe-rollback 3` |
+| `/vibe-redo <step>` | 标记 step 为未完成（反向更新 checkbox） | `/vibe-redo "Step 2: 编写 JWT"` |
+| `/vibe-bug <file> [lines]` | 标记发现 bug | `/vibe-bug auth.py 15-23 密码哈希错误` |
+| `/vibe-bug-fix <id>` | 标记 bug 已修复 | `/vibe-bug-fix bug-001` |
+| `/vibe-bugs` | 列出所有 bug 标记 | `/vibe-bugs` |
 | `/vibe-release <ver>` | 打 tag + 生成 changelog | `/vibe-release 1.2.0` |
 
 ### 🤖 智能辅助
@@ -126,8 +130,11 @@ Task 5: 安全工具（JWT + 密码）
 
 | LLM 工具 | 触发方式 | 用途 |
 |----------|---------|------|
-| `vibe_checkpoint` | LLM 自动调用 | 完成 step/task 后提交（带 `completedStep` 标记 checkbox，task 完成才 commit） |
+| `vibe_checkpoint` | LLM 自动调用 | 完成 step/task 后提交 |
 | `vibe_status` | LLM 自动调用 | 查询工作流状态 |
+| `vibe_bug` | LLM 自动调用 | 标记发现 bug（记录文件、位置、提交） |
+| `vibe_bug_fix` | LLM 自动调用 | 标记 bug 已修复 |
+| `vibe_bug_info` | LLM 自动调用 | 读取文件的 bug 详情（按需加载） |
 | `minimax_describe_image` | LLM 自动调用 | 主力模型"看"图 |
 | `minimax_web_search` | LLM 自动调用 | 主力模型搜索网络 |
 | `minimax_generate` | LLM 自动调用 | 生成图片/视频/音频 |

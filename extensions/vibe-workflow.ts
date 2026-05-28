@@ -126,6 +126,19 @@ interface PlanData {
   allSteps: PlanStep[];
 }
 
+/** Bug 标记 */
+interface BugMarker {
+  id: string;
+  timestamp: string;
+  file: string;
+  commitHash: string;
+  lineRange?: string;
+  description: string;
+  status: "open" | "fixed";
+  fixCommit?: string;
+  fixDescription?: string;
+}
+
 // =============================================================================
 // 2. 常量与配置
 // =============================================================================
@@ -135,6 +148,7 @@ const VIBE_DIR = "docs/vibe";
 const SESSIONS_DIR = `${VIBE_DIR}/sessions`;
 const DIFFS_DIR = `${VIBE_DIR}/diffs`;
 const TASKS_DIR = `${VIBE_DIR}/tasks`;
+const BUGS_DIR = `${VIBE_DIR}/bugs`;
 const BY_FILE_DIR = `${DIFFS_DIR}/by-file`; // v3: per-file diff 目录
 
 /** 关键文件名 */
@@ -679,6 +693,74 @@ async function updatePerFileDiffs(
 }
 
 /**
+ * 读取所有 bug 标记（从 INDEX.md 解析）
+ */
+async function readBugIndex(projectRoot: string): Promise<BugMarker[]> {
+  const indexPath = path.join(projectRoot, BUGS_DIR, "INDEX.md");
+  const content = await readFileSafe(indexPath);
+  if (!content) return [];
+
+  const bugs: BugMarker[] = [];
+  const entries = content.split(/^## /m).filter(Boolean);
+  for (const entry of entries) {
+    const idMatch = entry.match(/^Bug (\d+)/);
+    if (!idMatch) continue;
+    const id = `bug-${idMatch[1].padStart(3, "0")}`;
+    const file = entry.match(/\*\*File\*\*:\s*`([^`]+)`/)?.[1] || "";
+    const status = entry.match(/\*\*Status\*\*:\s*(\w+)/)?.[1] as BugMarker["status"] || "open";
+    const commitHash = entry.match(/\*\*Commit\*\*:\s*`([^`]+)`/)?.[1] || "";
+    const description = entry.match(/\*\*Description\*\*:\s*(.+)/)?.[1]?.trim() || "";
+    bugs.push({ id, timestamp: "", file, commitHash, description, status });
+  }
+  return bugs;
+}
+
+/**
+ * 获取指定文件的 bug 列表
+ */
+async function getBugsForFile(projectRoot: string, file: string): Promise<BugMarker[]> {
+  const bugs = await readBugIndex(projectRoot);
+  return bugs.filter((b) => b.file === file || file.endsWith(b.file) || b.file.endsWith(file));
+}
+
+/**
+ * 读取单个 bug 详情
+ */
+async function readBugDetail(projectRoot: string, bugId: string): Promise<string | null> {
+  const bugPath = path.join(projectRoot, BUGS_DIR, `${bugId}.md`);
+  return readFileSafe(bugPath);
+}
+
+/**
+ * 写入 bug 标记到 INDEX.md 和独立文件
+ */
+async function writeBugMarker(
+  projectRoot: string,
+  bug: BugMarker,
+  detailContent: string,
+): Promise<void> {
+  await ensureDir(path.join(projectRoot, BUGS_DIR));
+
+  // 写入独立文件
+  const bugPath = path.join(projectRoot, BUGS_DIR, `${bug.id}.md`);
+  await writeFile(bugPath, detailContent);
+
+  // 更新 INDEX.md
+  const indexPath = path.join(projectRoot, BUGS_DIR, "INDEX.md");
+  const existing = await readFileSafe(indexPath) || "# Bug Index\n";
+  const entry = [
+    `## Bug ${bug.id.replace("bug-", "")}`,
+    "",
+    `- **File**: \`${bug.file}\``,
+    `- **Status**: ${bug.status}`,
+    `- **Commit**: \`${bug.commitHash}\``,
+    `- **Description**: ${bug.description}`,
+    "",
+  ].join("\n");
+  await writeFile(indexPath, existing.replace(/\n$/, "") + "\n\n" + entry);
+}
+
+/**
  * 更新 active tasks 文件
  */
 async function updateActiveTasks(
@@ -839,6 +921,22 @@ async function buildContextInjection(
   lines.push(
     `- \`docs/superpowers/plans/\` — implementation plan with task/step structure (read this to find step text for completedStep)`,
   );
+
+  // 渐进式 bug 注入（只注入文件名 + 数量）
+  const bugs = await readBugIndex(state.projectRoot);
+  if (bugs.length > 0) {
+    const openBugs = bugs.filter((b) => b.status === "open");
+    const fixedBugs = bugs.filter((b) => b.status === "fixed");
+    if (openBugs.length > 0 || fixedBugs.length > 0) {
+      lines.push("");
+      lines.push("**Bug History** (call `vibe_bug_info(file)` before modifying these files):");
+      for (const bug of bugs) {
+        const icon = bug.status === "open" ? "🔴" : "✅";
+        lines.push(`- ${icon} \`${bug.file}\` — ${bug.description}`);
+      }
+    }
+  }
+
   lines.push("");
   lines.push("**Rules:**");
   lines.push(
@@ -1212,6 +1310,74 @@ async function updatePlanCheckbox(
     // 目录不存在时静默返回 false，其他错误 log 后返回 false
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
       console.error("[vibe] updatePlanCheckbox failed:", err);
+    }
+  }
+  return false;
+}
+
+/**
+ * 反向更新 plan checkbox：将匹配的 `- [x]` 改回 `- [ ]`
+ */
+async function updatePlanCheckboxReverse(
+  projectRoot: string,
+  taskName: string,
+): Promise<boolean> {
+  if (!taskName) return false;
+
+  function normalize(text: string): string {
+    return text.replace(/\*\*/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  function extractStepId(text: string): string | null {
+    const m = text.match(/^(?:step\s*)?(\d+)/i);
+    return m ? `step ${m[1]}` : null;
+  }
+
+  const normalizedTask = normalize(taskName);
+  const taskStepId = extractStepId(normalizedTask);
+  const plansDir = path.join(projectRoot, "docs", "superpowers", "plans");
+
+  try {
+    const files = await fsPromises.readdir(plansDir);
+    const mdFiles = files.filter((f) => f.endsWith(".md")).sort().reverse();
+
+    for (const file of mdFiles) {
+      const filePath = path.join(plansDir, file);
+      const content = await readFileSafe(filePath);
+      if (!content) continue;
+
+      const lines = content.split("\n");
+      let updated = false;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const checked = line.match(/^(\s*-\s*\[[xX]\]\s+)(.+)/);
+        if (!checked) continue;
+
+        const prefix = checked[1];
+        const planText = checked[2];
+        const normalizedPlan = normalize(planText);
+        const planStepId = extractStepId(normalizedPlan);
+
+        if (taskStepId && planStepId && taskStepId === planStepId) {
+          lines[i] = `${prefix.replace("[x]", "[ ]")} ${planText}`;
+          updated = true;
+          break;
+        }
+        if (normalizedPlan.includes(normalizedTask) || normalizedTask.includes(normalizedPlan)) {
+          lines[i] = `${prefix.replace("[x]", "[ ]")} ${planText}`;
+          updated = true;
+          break;
+        }
+      }
+
+      if (updated) {
+        await writeFile(filePath, lines.join("\n"));
+        return true;
+      }
+    }
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.error("[vibe] updatePlanCheckboxReverse failed:", err);
     }
   }
   return false;
@@ -3041,6 +3207,182 @@ export default function (pi: ExtensionAPI) {
   });
 
   /**
+   * /vibe-bug <file> [lines] [description] — 标记发现 bug
+   */
+  pi.registerCommand("vibe-bug", {
+    description: "标记发现 bug（记录文件、位置、提交）",
+    handler: async (args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify("⚠️ Vibe 工作流未启用", "warning");
+        return;
+      }
+
+      const parts = args?.trim().split(/\s+/) || [];
+      if (parts.length < 1) {
+        ctx.ui.notify("用法: /vibe-bug <file> [lines] [description]", "warning");
+        return;
+      }
+
+      const file = parts[0];
+      const lineMatch = parts[1]?.match(/^(\d+)(?:-(\d+))?$/);
+      const lineRange = lineMatch ? parts[1] : undefined;
+      const descStart = lineMatch ? 2 : 1;
+      const description = parts.slice(descStart).join(" ") || "未描述";
+
+      // 获取最近修改该文件的 commit
+      const lastCommit = gitExec(state.projectRoot, [
+        "log", "-1", "--format=%h", "--", file,
+      ]) || "unknown";
+
+      const bugNum = (await readBugIndex(state.projectRoot)).length + 1;
+      const bugId = `bug-${String(bugNum).padStart(3, "0")}`;
+
+      const bug: BugMarker = {
+        id: bugId,
+        timestamp: getTimestamp(),
+        file,
+        commitHash: lastCommit,
+        lineRange,
+        description,
+        status: "open",
+      };
+
+      const detail = [
+        `# ${bugId}: ${description}`,
+        "",
+        `- **Status**: open`,
+        `- **File**: \`${file}\``,
+        lineRange ? `- **Lines**: ${lineRange}` : "",
+        `- **Introduced in**: \`${lastCommit}\``,
+        `- **Timestamp**: ${bug.timestamp}`,
+        "",
+        `## Description`,
+        "",
+        description,
+        "",
+      ].filter(Boolean).join("\n");
+
+      await writeBugMarker(state.projectRoot, bug, detail);
+
+      ctx.ui.notify(
+        `🐛 Bug 标记: ${bugId}\n` +
+          `   文件: ${file}${lineRange ? `:${lineRange}` : ""}\n` +
+          `   引入提交: ${lastCommit}\n` +
+          `   描述: ${description}`,
+        "info",
+      );
+    },
+  });
+
+  /**
+   * /vibe-bug-fix <id> [description] — 标记 bug 已修复
+   */
+  pi.registerCommand("vibe-bug-fix", {
+    description: "标记 bug 已修复（记录修复提交和描述）",
+    handler: async (args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify("⚠️ Vibe 工作流未启用", "warning");
+        return;
+      }
+
+      const parts = args?.trim().split(/\s+/) || [];
+      const bugId = parts[0];
+      const fixDesc = parts.slice(1).join(" ") || "已修复";
+
+      if (!bugId) {
+        ctx.ui.notify("用法: /vibe-bug-fix <bug-id> [description]", "warning");
+        return;
+      }
+
+      const normalizedId = bugId.startsWith("bug-") ? bugId : `bug-${bugId.padStart(3, "0")}`;
+      const detail = await readBugDetail(state.projectRoot, normalizedId);
+      if (!detail) {
+        ctx.ui.notify(`❌ 未找到 ${normalizedId}`, "error");
+        return;
+      }
+
+      const fixCommit = gitExec(state.projectRoot, [
+        "rev-parse", "--short", "HEAD",
+      ]) || "unknown";
+
+      const updatedDetail = detail
+        .replace(/\*\*Status\*\*:\s*open/, `**Status**: fixed`)
+        + `\n\n## Fix\n\n- **Commit**: \`${fixCommit}\`\n- **Description**: ${fixDesc}\n`;
+
+      const bugPath = path.join(state.projectRoot, BUGS_DIR, `${normalizedId}.md`);
+      await writeFile(bugPath, updatedDetail);
+
+      // 更新 INDEX.md
+      const indexPath = path.join(state.projectRoot, BUGS_DIR, "INDEX.md");
+      const indexContent = await readFileSafe(indexPath) || "";
+      const updatedIndex = indexContent.replace(
+        new RegExp(`(## ${normalizedId.replace("bug-", "Bug ")}[\\s\\S]*?\\*\\*Status\\*\\*:\\s*)open`),
+        `$1fixed`,
+      );
+      await writeFile(indexPath, updatedIndex);
+
+      ctx.ui.notify(
+        `✅ ${normalizedId} 已标记为 fixed\n` +
+          `   修复提交: ${fixCommit}\n` +
+          `   描述: ${fixDesc}`,
+        "info",
+      );
+    },
+  });
+
+  /**
+   * /vibe-bugs — 列出所有 bug 标记
+   */
+  pi.registerCommand("vibe-bugs", {
+    description: "列出所有 bug 标记",
+    handler: async (_args, ctx) => {
+      const bugs = await readBugIndex(state.projectRoot);
+      if (bugs.length === 0) {
+        ctx.ui.notify("📝 暂无 bug 标记", "info");
+        return;
+      }
+
+      const lines = ["## 🐛 Bug 标记列表", ""];
+      for (const bug of bugs) {
+        const icon = bug.status === "open" ? "🔴" : "✅";
+        lines.push(`${icon} **${bug.id}** — \`${bug.file}\` — ${bug.description}`);
+      }
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  /**
+   * /vibe-redo <step> — 标记 step 为未完成（反向更新 checkbox）
+   */
+  pi.registerCommand("vibe-redo", {
+    description: "标记 plan step 为未完成（反向更新 checkbox）",
+    handler: async (args, ctx) => {
+      if (!state.enabled) {
+        ctx.ui.notify("⚠️ Vibe 工作流未启用", "warning");
+        return;
+      }
+
+      const stepName = args?.trim();
+      if (!stepName) {
+        ctx.ui.notify("用法: /vibe-redo <step名或编号>", "warning");
+        return;
+      }
+
+      const result = await updatePlanCheckboxReverse(state.projectRoot, stepName);
+      if (result) {
+        refreshWidget(ctx);
+        ctx.ui.notify(
+          `🔄 已标记为未完成: ${stepName}\n` +
+            `   面板已更新，待完成数 +1`,
+          "info",
+        );
+      } else {
+        ctx.ui.notify(`❌ 未找到匹配的 step: ${stepName}`, "error");
+      }
+    },
+  });
+
+  /**
    * /vibe-branch — 创建新的功能开发分支
    *
    * 自动从当前 HEAD 创建分支，初始化新的 vibe session。
@@ -3799,6 +4141,153 @@ export default function (pi: ExtensionAPI) {
           nextSteps: doc.nextSteps,
         },
       };
+    },
+  });
+
+  /**
+   * vibe_bug — LLM 标记发现 bug
+   */
+  pi.registerTool({
+    name: "vibe_bug",
+    label: "Vibe Bug",
+    description:
+      "标记发现 bug。记录问题文件、位置、引入提交。用于开发过程中发现问题时调用。",
+    promptSnippet: "Mark a bug found during development",
+    promptGuidelines: [
+      "Use vibe_bug when you discover a bug, error, or issue in the codebase.",
+      "Provide the file path, optional line range, and a description of the issue.",
+      "The tool auto-detects which commit last modified the file.",
+    ],
+    parameters: Type.Object({
+      file: Type.String({ description: "问题文件路径" }),
+      lines: Type.Optional(Type.String({ description: "问题行范围，如 '15-23' 或 '42'" })),
+      description: Type.String({ description: "问题描述" }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!state.enabled) {
+        return { content: [{ type: "text", text: "⚠️ Vibe 工作流未启用" }] };
+      }
+
+      const lastCommit = gitExec(state.projectRoot, [
+        "log", "-1", "--format=%h", "--", params.file,
+      ]) || "unknown";
+
+      const bugNum = (await readBugIndex(state.projectRoot)).length + 1;
+      const bugId = `bug-${String(bugNum).padStart(3, "0")}`;
+
+      const bug: BugMarker = {
+        id: bugId,
+        timestamp: getTimestamp(),
+        file: params.file,
+        commitHash: lastCommit,
+        lineRange: params.lines,
+        description: params.description,
+        status: "open",
+      };
+
+      const detail = [
+        `# ${bugId}: ${params.description}`,
+        "",
+        `- **Status**: open`,
+        `- **File**: \`${params.file}\``,
+        params.lines ? `- **Lines**: ${params.lines}` : "",
+        `- **Introduced in**: \`${lastCommit}\``,
+        `- **Timestamp**: ${bug.timestamp}`,
+        "",
+        `## Description`, "",
+        params.description, "",
+      ].filter(Boolean).join("\n");
+
+      await writeBugMarker(state.projectRoot, bug, detail);
+
+      return {
+        content: [{
+          type: "text",
+          text: `🐛 Bug 标记: ${bugId}\n文件: ${params.file}${params.lines ? `:${params.lines}` : ""}\n引入提交: ${lastCommit}\n描述: ${params.description}`,
+        }],
+      };
+    },
+  });
+
+  /**
+   * vibe_bug_fix — LLM 标记 bug 已修复
+   */
+  pi.registerTool({
+    name: "vibe_bug_fix",
+    label: "Vibe Bug Fix",
+    description: "标记 bug 已修复。记录修复提交和描述。",
+    promptSnippet: "Mark a bug as fixed",
+    promptGuidelines: [
+      "Use vibe_bug_fix after you have fixed a previously reported bug.",
+      "Provide the bug ID and a description of the fix.",
+    ],
+    parameters: Type.Object({
+      bugId: Type.String({ description: "Bug ID，如 'bug-001' 或 '001'" }),
+      description: Type.Optional(Type.String({ description: "修复描述" })),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!state.enabled) {
+        return { content: [{ type: "text", text: "⚠️ Vibe 工作流未启用" }] };
+      }
+
+      const normalizedId = params.bugId.startsWith("bug-") ? params.bugId : `bug-${params.bugId.padStart(3, "0")}`;
+      const detail = await readBugDetail(state.projectRoot, normalizedId);
+      if (!detail) {
+        return { content: [{ type: "text", text: `❌ 未找到 ${normalizedId}` }] };
+      }
+
+      const fixCommit = gitExec(state.projectRoot, ["rev-parse", "--short", "HEAD"]) || "unknown";
+      const fixDesc = params.description || "已修复";
+      const updatedDetail = detail
+        .replace(/\*\*Status\*\*:\s*open/, `**Status**: fixed`)
+        + `\n\n## Fix\n\n- **Commit**: \`${fixCommit}\`\n- **Description**: ${fixDesc}\n`;
+
+      await writeFile(path.join(state.projectRoot, BUGS_DIR, `${normalizedId}.md`), updatedDetail);
+
+      const indexPath = path.join(state.projectRoot, BUGS_DIR, "INDEX.md");
+      const indexContent = await readFileSafe(indexPath) || "";
+      await writeFile(indexPath, indexContent.replace(
+        new RegExp(`(## ${normalizedId.replace("bug-", "Bug ")}[\\s\\S]*?\\*\\*Status\\*\\*:\\s*)open`),
+        `$1fixed`,
+      ));
+
+      return {
+        content: [{
+          type: "text",
+          text: `✅ ${normalizedId} 已标记为 fixed\n修复提交: ${fixCommit}\n描述: ${fixDesc}`,
+        }],
+      };
+    },
+  });
+
+  /**
+   * vibe_bug_info — LLM 按需读取 bug 详情
+   */
+  pi.registerTool({
+    name: "vibe_bug_info",
+    label: "Vibe Bug Info",
+    description:
+      "读取指定文件的 bug 详情。在修改有 bug 历史的文件前调用，了解问题和修复记录。",
+    promptSnippet: "Read bug details for a file before modifying it",
+    promptGuidelines: [
+      "Use vibe_bug_info before modifying files that have bug history.",
+      "The context injection lists files with bugs — call this tool to read details.",
+    ],
+    parameters: Type.Object({
+      file: Type.String({ description: "要查询的文件路径" }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const bugs = await getBugsForFile(state.projectRoot, params.file);
+      if (bugs.length === 0) {
+        return { content: [{ type: "text", text: `✅ ${params.file} 无 bug 记录` }] };
+      }
+
+      const lines = [`## ${params.file} Bug History\n`];
+      for (const bug of bugs) {
+        const detail = await readBugDetail(state.projectRoot, bug.id);
+        lines.push(detail || `(${bug.id}: ${bug.description})`);
+      }
+      return { content: [{ type: "text", text: lines.join("\n---\n") }] };
     },
   });
 
