@@ -60,7 +60,7 @@ import { execSync, execFileSync } from "node:child_process";
 interface VibeState {
   /** 是否已启用 */
   enabled: boolean;
-  /** 当前任务名称 */
+  /** 当前任务名称（可以是 task 名或 step 名） */
   currentTask: string;
   /** 当前 session 的 checkpoint 计数 */
   checkpointCount: number;
@@ -104,6 +104,26 @@ interface SessionDoc {
   checkpoints: CheckpointRecord[];
   nextSteps: string[];
   notes: string;
+}
+
+/** Plan 中的单个 step */
+interface PlanStep {
+  text: string;
+  done: boolean;
+  model?: string;
+}
+
+/** Plan 中的 task（包含多个 step） */
+interface PlanTask {
+  name: string;
+  steps: PlanStep[];
+}
+
+/** Plan 解析结果 */
+interface PlanData {
+  file: string;
+  tasks: PlanTask[];
+  allSteps: PlanStep[];
 }
 
 // =============================================================================
@@ -766,9 +786,29 @@ async function buildContextInjection(
   const lines: string[] = [];
   lines.push("## Vibe Workflow");
   lines.push(`- Session: \`${state.sessionId}\` · Checkpoints: ${state.checkpointCount}`);
-  lines.push(
-    `- Task: **${state.currentTask || "_(未设置, 用 /vibe-task 设置)_"}**`,
-  );
+  
+  // 增强 Current Task 信息注入
+  if (state.currentTask) {
+    lines.push("");
+    lines.push("## 🎯 Current Task");
+    lines.push(`**${state.currentTask}**`);
+    lines.push("");
+    lines.push("**⚠️ IMPORTANT: You MUST work ONLY on this task.**");
+    lines.push("- Do NOT proceed to next steps in the plan");
+    lines.push("- Do NOT expand scope beyond this task");
+    lines.push("- After completing this task, STOP and call vibe_checkpoint");
+    lines.push("- Let the user decide what to do next");
+    lines.push("");
+    lines.push("**Task Resolution:**");
+    lines.push("- First, check if this task matches a step in the plan");
+    lines.push("- If it matches a plan step, implement that specific step");
+    lines.push("- If it doesn't match any plan step, treat it as an independent task");
+    lines.push("- For independent tasks, focus on the user's specific request");
+  } else {
+    lines.push(
+      `- Task: **_(未设置, 用 /vibe-task 设置)_**`,
+    );
+  }
 
   // 未提交变更提醒
   if (changedFiles.length > 0) {
@@ -799,10 +839,19 @@ async function buildContextInjection(
   lines.push("");
   lines.push("**Rules:**");
   lines.push(
-    "- After completing the current task, call \`vibe_checkpoint\` to commit & update docs",
+    "- After completing a step, call \`vibe_checkpoint\` with \`completedStep\` matching the plan's step text",
   );
   lines.push(
-    "- 🚫 Do NOT use manual git commands (\`git add\`, \`git commit\`, \`git push\`) for committing. Always use the \`vibe_checkpoint\` tool instead.",
+    "- To find your step: read the plan file, match your current task (e.g., 'task5-1' = Task 5 Step 1), then use the exact step text from the plan",
+  );
+  lines.push(
+    "- After completing ALL steps of a task, \`vibe_checkpoint\` auto-detects and triggers git commit",
+  );
+  lines.push(
+    "- 🚫 **STRICTLY FORBIDDEN: Direct git commands.** Do NOT use \`git add\`, \`git commit\`, \`git push\`, \`git merge\`, or ANY git command directly. ALL git operations MUST go through \`vibe_checkpoint\`.",
+  );
+  lines.push(
+    "- The ONLY exception is read-only git commands for information gathering: \`git status\`, \`git log\`, \`git diff\`, \`git branch\`.",
   );
   // 当用户设置了 task 时，强化单任务约束
   if (state.currentTask) {
@@ -815,9 +864,18 @@ async function buildContextInjection(
     lines.push(
       "- After completing this task, STOP and call vibe_checkpoint. Let the user decide next.",
     );
+    lines.push(
+      "- ⚠️ **BOUNDARY ALERT:** If the user's request deviates significantly from the current task, NOTIFY the user instead of proceeding. Ask for confirmation before expanding scope.",
+    );
+    lines.push(
+      "- If the user asks about something unrelated to the current task, politely remind them of the current task and ask if they want to switch tasks.",
+    );
   } else {
     lines.push(
       "- Do NOT expand scope beyond the current task. One task at a time.",
+    );
+    lines.push(
+      "- ⚠️ **BOUNDARY ALERT:** If the user's request deviates significantly from the current task, NOTIFY the user instead of proceeding.",
     );
   }
   lines.push(
@@ -834,7 +892,7 @@ async function buildContextInjection(
   lines.push("");
   lines.push("**Tools:**");
   lines.push(
-    "- Use \`vibe_checkpoint\` to commit changes (git commit + update tracking docs). Call this instead of manual git commands.",
+    "- \`vibe_checkpoint(message, completedStep?)\`: step 完成 → 带 completedStep 标记 checkbox；task 完成 → 自动 commit",
   );
   lines.push(
     "- Use \`vibe_status\` to check current workflow state (task, checkpoints, uncommitted files).",
@@ -858,12 +916,122 @@ async function executeCheckpoint(
   state: VibeState,
   metrics: VibeMetrics,
   refreshWidget: (ctx: ExtensionContext) => void,
+  readPlanTodos: (projectRoot: string) => Promise<PlanData | null>,
   message?: string,
+  completedStep?: string,
 ): Promise<{ success: boolean; message: string }> {
   const projectRoot = state.projectRoot;
   const cwd = ctx.cwd;
 
-  // 1. 检查是否为 git 仓库
+  // 1. 更新 plan 文件中的 checkbox 状态（先更新，再判断 task 完成度）
+  const stepToUpdate = completedStep || state.currentTask;
+  if (stepToUpdate) {
+    await updatePlanCheckbox(projectRoot, stepToUpdate);
+  }
+
+  // 2. 判断当前 task 是否全部完成（如果有 plan 的话）
+  const plan = await readPlanTodos(projectRoot);
+  let taskFullyComplete = true;
+  if (plan && completedStep) {
+    /**
+     * 在 plan 中查找 completedStep 对应的 task
+     * 匹配策略：① 子串匹配 ② taskN-stepM 格式 ③ step 编号匹配（优先当前 task）
+     */
+    function findTaskForStep(step: string): PlanTask | null {
+      // ① 子串匹配
+      for (const task of plan!.tasks) {
+        if (task.steps.some((s) =>
+          s.text.includes(step) || step.includes(s.text.replace(/\*\*/g, "").trim())
+        )) {
+          return task;
+        }
+      }
+
+      // ② 解析 "task5-1"、"5-1"、"task 5 step 1"、"5.1"、"task5" 等格式
+      // 排除 "step X" 开头（那是纯 step，走策略③）
+      if (!step.match(/^step\s*\d/i)) {
+        const taskStepMatch = step.match(/(?:task\s*)?(\d+)[\s\-_\.]*(?:step)?\s*(\d*)/i);
+        if (taskStepMatch) {
+          const taskNum = taskStepMatch[1];
+          const stepNum = taskStepMatch[2];
+          for (const task of plan!.tasks) {
+            if (task.name.match(new RegExp(`Task\\s+${taskNum}[：:]`, "i"))) {
+              if (!stepNum) return task;
+              const hasStep = task.steps.some((s) => {
+                const m = s.text.match(/(?:step\s*)?(\d+)/i);
+                return m && m[1] === stepNum;
+              });
+              if (hasStep) return task;
+            }
+          }
+        }
+      }
+
+      // ③ 纯 step 编号：优先在当前 task 里找，找不到再全局搜索
+      const stepId = step.match(/(?:step\s*)?(\d+)/i)?.[1];
+      if (stepId) {
+        // 先根据 state.currentTask 定位到具体 task
+        if (state.currentTask) {
+          for (const task of plan!.tasks) {
+            if (task.steps.some((s) =>
+              s.text.includes(state.currentTask) || state.currentTask.includes(s.text.replace(/\*\*/g, "").trim())
+            )) {
+              const found = task.steps.some((s) => {
+                const m = s.text.match(/(?:step\s*)?(\d+)/i);
+                return m && m[1] === stepId;
+              });
+              if (found) return task;
+            }
+          }
+          const taskNumMatch = state.currentTask.match(/(?:task\s*)?(\d+)/i);
+          if (taskNumMatch) {
+            for (const task of plan!.tasks) {
+              if (task.name.match(new RegExp(`Task\\s+${taskNumMatch[1]}[：:]`, "i"))) {
+                const found = task.steps.some((s) => {
+                  const m = s.text.match(/(?:step\s*)?(\d+)/i);
+                  return m && m[1] === stepId;
+                });
+                if (found) return task;
+              }
+            }
+          }
+        }
+        // 找第一个有未完成 step 的 task（最近未处理的 task）
+        for (const task of plan!.tasks) {
+          if (task.steps.some((s) => !s.done)) {
+            const found = task.steps.some((s) => {
+              const m = s.text.match(/(?:step\s*)?(\d+)/i);
+              return m && m[1] === stepId;
+            });
+            if (found) return task;
+          }
+        }
+      }
+
+      return null;
+    }
+
+    const matchedTask = findTaskForStep(completedStep);
+    if (matchedTask) {
+      taskFullyComplete = matchedTask.steps.every((s) => s.done);
+    } else {
+      // 找不到对应 task → 默认不 commit
+      taskFullyComplete = false;
+    }
+  }
+
+  // 3. 如果 task 未全部完成 → 只更新 checkbox，不 commit
+  if (!taskFullyComplete) {
+    refreshWidget(ctx);
+    return {
+      success: true,
+      message:
+        `☑️ Step 已标记完成: ${stepToUpdate}\n` +
+        `⏳ Task 尚有未完成的 step，跳过 commit。完成整个 task 后再调用 vibe_checkpoint 触发提交。`,
+    };
+  }
+
+  // 4. task 全部完成（或无 plan）→ 执行 commit 流程
   if (!isGitRepo(cwd)) {
     return {
       success: false,
@@ -871,16 +1039,17 @@ async function executeCheckpoint(
     };
   }
 
-  // 2. 获取变更文件
   const changedFiles = getChangedFiles(cwd);
   if (changedFiles.length === 0) {
+    refreshWidget(ctx);
     return {
-      success: false,
-      message: "📝 没有检测到文件变更，跳过 checkpoint。",
+      success: true,
+      message:
+        `✅ Task 完成！但没有检测到文件变更，跳过 commit。\n` +
+        `   已更新 plan checkbox。`,
     };
   }
 
-  // 3. 生成 commit 信息
   const taskName = state.currentTask || "vibe-task";
   const checkpointNum = state.checkpointCount + 1;
   const autoMessage = message ||
@@ -893,7 +1062,6 @@ async function executeCheckpoint(
     `Files: ${changedFiles.map((f) => path.basename(f)).join(", ")}`,
   ].join("\n");
 
-  // 4. 执行 commit
   const commitResult = gitCommit(cwd, fullCommitMessage);
   if (!commitResult) {
     return {
@@ -931,10 +1099,10 @@ async function executeCheckpoint(
   });
   await writeSessionDoc(projectRoot, state, doc);
 
-  // 8. 更新 active tasks
+  // 9. 更新 active tasks
   await updateActiveTasks(projectRoot, state, doc);
 
-  // 9. 持久化状态
+  // 10. 持久化状态
   await pi.appendEntry(EXT_NAME, state);
 
   return {
@@ -945,6 +1113,92 @@ async function executeCheckpoint(
       `   Files: ${changedFiles.map((f) => `\`${f}\``).join(", ")}\n` +
       `   Diff: docs/vibe/diffs/last.md`,
   };
+}
+
+/**
+ * 更新 plan 文件中对应任务的 checkbox 状态
+ * 将匹配当前任务的 `- [ ]` 更新为 `- [x]`
+ */
+async function updatePlanCheckbox(
+  projectRoot: string,
+  taskName: string,
+): Promise<boolean> {
+  if (!taskName) return false;
+
+  /**
+   * 清理文本用于匹配：去除 markdown 加粗、多余空格、转小写
+   */
+  function normalize(text: string): string {
+    return text
+      .replace(/\*\*/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+  }
+
+  /**
+   * 提取 step 编号：从 "Step 4: xxx" 或 "4. xxx" 中提取 "step 4" 或 "4"
+   */
+  function extractStepId(text: string): string | null {
+    const m = text.match(/^(?:step\s*)?(\d+)/i);
+    return m ? `step ${m[1]}` : null;
+  }
+
+  const normalizedTask = normalize(taskName);
+  const taskStepId = extractStepId(normalizedTask);
+
+  const plansDir = path.join(projectRoot, "docs", "superpowers", "plans");
+  try {
+    const files = await fsPromises.readdir(plansDir);
+    const mdFiles = files
+      .filter((f) => f.endsWith(".md"))
+      .sort()
+      .reverse(); // 最新的排前面
+
+    for (const file of mdFiles) {
+      const filePath = path.join(plansDir, file);
+      const content = await readFileSafe(filePath);
+      if (!content) continue;
+
+      const lines = content.split("\n");
+      let updated = false;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const unchecked = line.match(/^(\s*-\s*\[\s*\]\s+)(.+)/);
+        if (!unchecked) continue;
+
+        const prefix = unchecked[1];
+        const planText = unchecked[2];
+        const normalizedPlan = normalize(planText);
+        const planStepId = extractStepId(normalizedPlan);
+
+        // 优先按 step 编号匹配（Step 4 == Step 4: xxx）
+        if (taskStepId && planStepId && taskStepId === planStepId) {
+          lines[i] = `${prefix.replace("[ ]", "[x]")} ${planText}`;
+          updated = true;
+          break;
+        }
+
+        // 次选：双向子串匹配
+        if (
+          normalizedPlan.includes(normalizedTask) ||
+          normalizedTask.includes(normalizedPlan)
+        ) {
+          lines[i] = `${prefix.replace("[ ]", "[x]")} ${planText}`;
+          updated = true;
+          break;
+        }
+      }
+
+      if (updated) {
+        await writeFile(filePath, lines.join("\n"));
+        return true;
+      }
+    }
+  } catch {
+    // 目录不存在或其他错误
+  }
+  return false;
 }
 
 /**
@@ -1129,13 +1383,9 @@ export default function (pi: ExtensionAPI) {
   }
 
   /**
-   * 读取最新 plan 文件，解析 TODO 列表
-   * 返回 { file: 文件名, tasks: [{ text, done }] } 或 null
+   * 读取最新 plan 文件，解析 TODO 列表（按 task 分组）
    */
-  async function readPlanTodos(projectRoot: string): Promise<{
-    file: string;
-    tasks: { text: string; done: boolean; model?: string }[];
-  } | null> {
+  async function readPlanTodos(projectRoot: string): Promise<PlanData | null> {
     const plansDir = path.join(projectRoot, "docs", "superpowers", "plans");
     try {
       const files = await fsPromises.readdir(plansDir);
@@ -1148,21 +1398,37 @@ export default function (pi: ExtensionAPI) {
         const content = await readFileSafe(path.join(plansDir, file));
         if (!content) continue;
 
-        // 解析 checkbox: - [ ] task 或 - [x] task，末尾可选 💡pro/💡flash/💡mmx
-        const tasks: { text: string; done: boolean; model?: string }[] = [];
+        const tasks: PlanTask[] = [];
+        const allSteps: PlanStep[] = [];
+        let currentTask: PlanTask | null = null;
+
         for (const line of content.split("\n")) {
+          // 匹配 task 标题: ### Task N: xxx
+          const taskHeader = line.match(/^###\s+(Task\s+\d+.*)/i);
+          if (taskHeader) {
+            currentTask = { name: taskHeader[1].trim(), steps: [] };
+            tasks.push(currentTask);
+            continue;
+          }
+
+          // 匹配 checkbox
           const unchecked = line.match(/^\s*-\s*\[\s*\]\s+(.+)/);
           const checked = line.match(/^\s*-\s*\[[xX]\]\s+(.+)/);
-          if (unchecked) {
-            const { text, model } = parseModelHint(unchecked[1]);
-            tasks.push({ text, done: false, model });
-          } else if (checked) {
-            const { text, model } = parseModelHint(checked[1]);
-            tasks.push({ text, done: true, model });
+          if (unchecked || checked) {
+            const raw = (unchecked || checked)![1];
+            const { text, model } = parseModelHint(raw);
+            const step: PlanStep = { text, done: !!checked, model };
+            allSteps.push(step);
+            if (currentTask) {
+              currentTask.steps.push(step);
+            } else {
+              // checkbox 出现在任何 task 之前 → 创建匿名 task
+              tasks.push({ name: "(unnamed)", steps: [step] });
+            }
           }
         }
 
-        if (tasks.length > 0) return { file, tasks };
+        if (allSteps.length > 0) return { file, tasks, allSteps };
       }
     } catch {
       // 目录不存在
@@ -1191,7 +1457,7 @@ export default function (pi: ExtensionAPI) {
       // 如果 TODO 中有匹配当前任务名的 step，显示其模型推荐
       let modelHint = "";
       if (plan && state.currentTask) {
-        const matched = plan.tasks.find((t) =>
+        const matched = plan.allSteps.find((t) =>
           t.text.includes(state.currentTask),
         );
         if (matched?.model) {
@@ -1202,14 +1468,14 @@ export default function (pi: ExtensionAPI) {
       lines.push(taskLine + modelHint);
 
       // TODO 列表摘要（不展示内容，避免面板过长）
-      if (plan && plan.tasks.length > 0) {
-        const pending = plan.tasks.filter((t) => !t.done);
-        const done = plan.tasks.filter((t) => t.done);
-        const progress = plan.tasks.length > 0
-          ? ` ${Math.round((done.length / plan.tasks.length) * 100)}%`
+      if (plan && plan.allSteps.length > 0) {
+        const pending = plan.allSteps.filter((t) => !t.done);
+        const done = plan.allSteps.filter((t) => t.done);
+        const progress = plan.allSteps.length > 0
+          ? ` ${Math.round((done.length / plan.allSteps.length) * 100)}%`
           : "";
         lines.push(
-          `📝 TODO: ${pending.length} 待完成 / ${plan.tasks.length} 总计${progress}  │  /vibe-todo 查看全部`,
+          `📝 TODO: ${pending.length} 待完成 / ${plan.allSteps.length} 总计${progress}  │  /vibe-todo 查看全部`,
         );
       } else {
         lines.push(`📝 TODO: _(/skill:writing-plans 生成计划)_`);
@@ -1396,7 +1662,7 @@ export default function (pi: ExtensionAPI) {
 
     // 自动 checkpoint（不留确认，压缩是自动触发的）
     try {
-      const result = await executeCheckpoint(pi, ctx, state, metrics, refreshWidget, "auto: pre-compaction checkpoint");
+      const result = await executeCheckpoint(pi, ctx, state, metrics, refreshWidget, readPlanTodos, "auto: pre-compaction checkpoint");
       if (ctx.hasUI && result.success) {
         ctx.ui.notify(
           `📦 Pre-compaction checkpoint: ${changedFiles.length} file(s) saved to git`,
@@ -1771,7 +2037,10 @@ export default function (pi: ExtensionAPI) {
           "<!-- 任务边界约束：大模型不会自动扩展需求，严格遵循以下边界 -->",
           "- Each task MUST be a single, small, atomic unit of work",
           "- Each task MUST be verifiable (answer \"is this done?\" with yes/no)",
-          "- After completing each task, call the **vibe_checkpoint** tool",
+          "- After completing a STEP: call `vibe_checkpoint(completedStep='Step N: xxx')` to mark checkbox (no commit)",
+          "- After completing ALL steps of a TASK: `vibe_checkpoint` auto-detects and triggers git commit",
+          "- 🚫 **STRICTLY FORBIDDEN:** Do NOT use `git add`, `git commit`, `git push`, or any direct git commands. ALL git operations MUST go through `vibe_checkpoint`.",
+          "- The ONLY exception is read-only git commands: `git status`, `git log`, `git diff`, `git branch`",
           "- Do NOT expand scope beyond the current task without user approval",
           "- Read `docs/vibe/tasks/active.md` at the start of each session",
           "",
@@ -1905,7 +2174,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const result = await executeCheckpoint(pi, ctx, state, metrics, refreshWidget);
+      const result = await executeCheckpoint(pi, ctx, state, metrics, refreshWidget, readPlanTodos);
       ctx.ui.notify(result.message, result.success ? "info" : "warning");
     },
   });
@@ -2327,10 +2596,10 @@ export default function (pi: ExtensionAPI) {
   });
 
   /**
-   * /vibe-todo — 查看完整 TODO 列表（可滚动）。
+   * /vibe-todo — 查看完整 TODO 列表（可滚动，按 task 分组）。
    */
   pi.registerCommand("vibe-todo", {
-    description: "查看完整 TODO 列表（从 writing-plans 生成的计划）",
+    description: "查看完整 TODO 列表（从 writing-plans 生成的计划，按 task 分组）",
     handler: async (_args, ctx) => {
       if (!state.enabled) {
         ctx.ui.notify("⚠️ Vibe 工作流未启用", "warning");
@@ -2338,7 +2607,7 @@ export default function (pi: ExtensionAPI) {
       }
 
       const plan = await readPlanTodos(state.projectRoot);
-      if (!plan || plan.tasks.length === 0) {
+      if (!plan || plan.allSteps.length === 0) {
         ctx.ui.notify(
           "📝 暂无 TODO。使用 /skill:writing-plans 生成实现计划。",
           "info",
@@ -2346,25 +2615,26 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      const pending = plan.tasks.filter((t) => !t.done);
-      const done = plan.tasks.filter((t) => t.done);
+      const totalDone = plan.allSteps.filter((s) => s.done).length;
+      const totalAll = plan.allSteps.length;
+      const progress = Math.round((totalDone / totalAll) * 100);
 
       const lines: string[] = [];
       lines.push(`## 📝 TODO — ${plan.file}`);
+      lines.push(`> 进度: ${totalDone}/${totalAll} (${progress}%)`);
       lines.push("");
 
-      if (pending.length > 0) {
-        lines.push(`### ☐ 待完成 (${pending.length})`);
-        for (let i = 0; i < pending.length; i++) {
-          lines.push(`${i + 1}. ${pending[i].text}`);
-        }
-        lines.push("");
-      }
+      for (const task of plan.tasks) {
+        const taskDone = task.steps.filter((s) => s.done).length;
+        const taskAll = task.steps.length;
+        const taskComplete = taskDone === taskAll;
+        const icon = taskComplete ? "✅" : "☐";
 
-      if (done.length > 0) {
-        lines.push(`### ✅ 已完成 (${done.length})`);
-        for (let i = 0; i < done.length; i++) {
-          lines.push(`${i + 1}. ~~${done[i].text}~~`);
+        lines.push(`### ${icon} ${task.name} (${taskDone}/${taskAll})`);
+        for (const step of task.steps) {
+          const checkbox = step.done ? "- [x]" : "- [ ]";
+          const strike = step.done ? "~~" : "";
+          lines.push(`  ${checkbox} ${strike}${step.text}${strike}`);
         }
         lines.push("");
       }
@@ -2372,7 +2642,6 @@ export default function (pi: ExtensionAPI) {
       if (state.currentTask) {
         lines.push(`---`);
         lines.push(`🎯 当前任务: **${state.currentTask}**`);
-        lines.push(`> 仅完成当前任务，不要跳到下一步。`);
       }
 
       ctx.ui.notify(lines.join("\n"), "info");
@@ -2701,7 +2970,7 @@ export default function (pi: ExtensionAPI) {
             ],
           );
           if (!choice || choice === "Cancel") return;
-          await executeCheckpoint(pi, ctx, state, metrics, refreshWidget);
+          await executeCheckpoint(pi, ctx, state, metrics, refreshWidget, readPlanTodos);
         } else {
           ctx.ui.notify(
             "⚠️ 有未提交变更，请先运行 /vibe-checkpoint",
@@ -2911,7 +3180,7 @@ export default function (pi: ExtensionAPI) {
             ["Auto-checkpoint then release", "Cancel"],
           );
           if (!choice || choice === "Cancel") return;
-          await executeCheckpoint(pi, ctx, state, metrics, refreshWidget);
+          await executeCheckpoint(pi, ctx, state, metrics, refreshWidget, readPlanTodos);
         } else {
           ctx.ui.notify(
             "⚠️ 有未提交变更，请先运行 /vibe-checkpoint",
@@ -3236,20 +3505,28 @@ export default function (pi: ExtensionAPI) {
     name: "vibe_checkpoint",
     label: "Vibe Checkpoint",
     description:
-      "完成当前任务后调用此工具，自动执行 git commit、生成 diff 摘要、更新 session 文档。" +
-      " 在 AGENTS.md 中有约束「每个任务完成后必须调用此工具」。如果 vibe 工作流未启用，此工具不执行任何操作。",
+      "完成任务后调用此工具。行为取决于 completedStep 参数：" +
+      "① 如果提供了 completedStep → 只更新 plan 中的 checkbox，不 commit（除非该 task 的所有 step 都已完成）；" +
+      "② 如果不提供 completedStep 或 task 全部完成 → 执行 git commit + 更新 session 文档。" +
+      " ⚠️ 你必须通过 message 参数提供有意义的 commit message。",
     promptSnippet:
-      "Commit current changes and update session documentation",
+      "Mark step done or commit completed task",
     promptGuidelines: [
-      "Use vibe_checkpoint after completing each atomic task to commit changes and update tracking documents.",
-      "Do NOT call vibe_checkpoint if no meaningful changes were made.",
-      "Call vibe_checkpoint BEFORE moving on to the next task.",
+      "When you finish a SINGLE step: call vibe_checkpoint with completedStep to mark the checkbox. No git commit happens.",
+      "When you finish the LAST step of a task: call vibe_checkpoint with completedStep. The plugin auto-detects task completion and triggers git commit.",
+      "When there is no plan or you want to force commit: call vibe_checkpoint without completedStep.",
+      "MANDATORY: Always provide a clear, descriptive commit message via the message parameter.",
+      "MANDATORY: completedStep should match the step text in the plan file. Read the plan first, then use the exact text (e.g., 'Step 2: 编写 JWT 工具和密码哈希'). If the user set a task like 'task5-1', that means Task 5 Step 1 — find it in the plan and use the plan's step text.",
     ],
     parameters: Type.Object({
-      message: Type.Optional(
+      message: Type.String({
+        description:
+          "必填。用一句话描述本次改动内容（英文或中文均可）。例如: 'feat: add user registration endpoint' 或 '创建 requirements.txt 和 .env.example'",
+      }),
+      completedStep: Type.Optional(
         Type.String({
           description:
-            "可选的 commit message 补充说明。不提供则自动生成。",
+            "你刚完成的 plan step 的完整标题，用于更新 plan 文件中的 checkbox。例如: 'Step 4: 创建 auth-api/app/__init__.py'。必须与 plan 文件中的 step 标题完全匹配。",
         }),
       ),
     }),
@@ -3271,7 +3548,9 @@ export default function (pi: ExtensionAPI) {
         state,
         metrics,
         refreshWidget,
+        readPlanTodos,
         params.message,
+        params.completedStep,
       );
 
       return {

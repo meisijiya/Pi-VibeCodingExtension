@@ -1,5 +1,32 @@
 # Changelog
 
+## 5.7.0 (2026-05-28)
+
+### 🎯 Step/Task 分离 + 智能匹配
+
+**Step vs Task 提交机制：**
+- `vibe_checkpoint(completedStep="Step N: ...")` — 完成单个 step 只标记 checkbox，不 commit
+- 只有整个 Task 的所有 step 完成时，才自动触发 git commit
+- LLM 每完成一个 step 都可以调用 `vibe_checkpoint`，插件自动判断是否需要 commit
+
+**`/vibe-task` 智能匹配：**
+- 支持 `task5-1`、`5-1`、`5.1`、`step2` 等自然格式
+- `step2` 自动定位到第一个未完成 Task 的 Step 2
+- 跳步时（如 step 2 未完成就设 step 3）自动警告
+
+**`/vibe-todo` 按 Task 分组显示：**
+- 按 `### Task N:` 标题分组，每个 Task 显示完成度
+- 进度条显示总完成百分比
+
+**Plan Checkbox 自动更新：**
+- `updatePlanCheckbox()` — checkpoint 时自动更新 plan 文件中的 `- [ ]` → `- [x]`
+- 匹配策略：子串匹配 → taskN-stepM 格式 → step 编号（优先当前 task）
+
+**LLM 行为约束强化：**
+- 禁止直接使用 `git add/commit/push/merge`，所有 git 操作必须通过 `vibe_checkpoint`
+- 偏离当前任务时通知用户而非自行扩展
+- `completedStep` 参数指导 LLM 使用 plan 中的精确文本
+
 ## 3.0.0 (2026-05-25)
 
 ### 🚀 v3.0: Per-file Diff + 智能自动 Checkpoint

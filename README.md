@@ -9,7 +9,7 @@
 解法只有一个：**最小化每一步，让 AI 始终知道「在做什么、做了什么、边界在哪」**。这个 pi 扩展就是这套方法论的工程化落地。
 
 [![pi-package](https://img.shields.io/badge/pi-package-blue)](https://pi.dev/packages)
-[![version](https://img.shields.io/badge/version-5.6.0-green)](#)
+[![version](https://img.shields.io/badge/version-5.7.0-green)](#)
 [![license](https://img.shields.io/badge/license-MIT-orange)](LICENSE)
 
 ---
@@ -54,6 +54,26 @@ pi
 "帮我实现登录页面，每完成一个小任务调用 vibe_checkpoint"
 ```
 
+### Step vs Task：提交时机
+
+Plan 中每个 Task 包含多个 Step。**提交（commit）只在整个 Task 完成时触发**，而不是每个 Step 都提交。
+
+```
+Task 5: 安全工具（JWT + 密码）
+  ├─ Step 1: 创建 __init__.py  →  vibe_checkpoint(completedStep="Step 1: ...")  →  ☑️ 标记 checkbox，不 commit
+  ├─ Step 2: 编写 security.py  →  vibe_checkpoint(completedStep="Step 2: ...")  →  ☑️ 标记 checkbox，不 commit
+  └─ Step 3: Commit            →  vibe_checkpoint(completedStep="Step 3: ...")  →  ✅ Task 全部完成 → git commit
+```
+
+`/vibe-task` 支持智能匹配：
+
+| 输入 | 含义 |
+|------|------|
+| `task5-1` / `5-1` / `5.1` | Task 5 Step 1 |
+| `task5` / `5` | Task 5（整个 task） |
+| `step2` | 第一个未完成 Task 的 Step 2 |
+| `Step 2: 编写 JWT 工具` | 按 plan 文本精确匹配 |
+
 ---
 
 ## 命令速查表
@@ -65,7 +85,7 @@ pi
 | `/vibe-init` | 初始化项目（创建目录 + AGENTS.md 模板） | `/vibe-init` |
 | `/vibe-enable` | 启用工作流（开始上下文注入） | `/vibe-enable` |
 | `/vibe-disable` | 禁用工作流 | `/vibe-disable` |
-| `/vibe-task <name>` | 设置当前任务名（可独立使用，无需 plan） | `/vibe-task "实现登录验证"` |
+| `/vibe-task <name>` | 设置当前任务（支持智能匹配：`task5-1`、`5-1`、`step2`） | `/vibe-task task5-1` |
 | `/vibe-checkpoint` | 提交变更 + 更新文档 | `/vibe-checkpoint` |
 | `/vibe-status` | 查看状态 + 上下文用量 + 压缩建议 | `/vibe-status` |
 | `/vibe-handoff` | 生成交接文档 + 自动触发 /skill:handoff | `/vibe-handoff` |
@@ -89,7 +109,7 @@ pi
 | `/vibe-metrics` | 工作流统计面板 | `/vibe-metrics` |
 | `/vibe-autocheckpoint` | 开启/关闭自动 checkpoint | `/vibe-autocheckpoint off` |
 | `/vibe-model` | 快速切换模型（pro/flash/mmx/mimo/back） | `/vibe-model flash` |
-| `/vibe-todo` | 查看完整 TODO 列表（可滚动） | `/vibe-todo` |
+| `/vibe-todo` | 查看完整 TODO 列表（按 Task 分组，可滚动） | `/vibe-todo` |
 | `/vibe-files` | 查看变更文件（按 checkpoint 分组） | `/vibe-files` |
 | `/vibe-panel` | 切换编辑器上方状态面板 | `/vibe-panel` |
 
@@ -103,7 +123,7 @@ pi
 
 | LLM 工具 | 触发方式 | 用途 |
 |----------|---------|------|
-| `vibe_checkpoint` | LLM 自动调用 | 完成任务后提交 |
+| `vibe_checkpoint` | LLM 自动调用 | 完成 step/task 后提交（带 `completedStep` 标记 checkbox，task 完成才 commit） |
 | `vibe_status` | LLM 自动调用 | 查询工作流状态 |
 | `minimax_describe_image` | LLM 自动调用 | 主力模型"看"图 |
 | `minimax_web_search` | LLM 自动调用 | 主力模型搜索网络 |
