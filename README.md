@@ -9,7 +9,7 @@
 解法只有一个：**最小化每一步，让 AI 始终知道「在做什么、做了什么、边界在哪」**。这个 pi 扩展就是这套方法论的工程化落地。
 
 [![pi-package](https://img.shields.io/badge/pi-package-blue)](https://pi.dev/packages)
-[![version](https://img.shields.io/badge/version-5.7.0-green)](#)
+[![version](https://img.shields.io/badge/version-5.8.0-green)](#)
 [![license](https://img.shields.io/badge/license-MIT-orange)](LICENSE)
 
 ---
@@ -519,6 +519,56 @@ Squash 前必须确认:
 
 ---
 
+## 场景7：Bug 追踪（渐进式加载）
+
+> **目标**：开发过程中发现 bug，标记并追踪修复，后续开发时自动提醒。
+
+### 详细流程
+
+```bash
+# ═══ 第 1 步：开发中发现 bug ═══
+# LLM 在实现 Task 6 时发现 auth.py 有 bug
+# LLM 自动调用 vibe_bug(file="auth.py", lines="15-23", description="密码哈希 rounds 错误")
+# → 🐛 Bug 标记: bug-001
+#    文件: auth.py:15-23
+#    引入提交: abc1234
+
+# ═══ 第 2 步：继续开发其他任务 ═══
+/vibe-task "实现用户接口"
+# ... Task 7-10 开发 ...
+
+# ═══ 第 3 步：修复 bug ═══
+/vibe-task "修复 auth.py 密码哈希"
+# LLM 看到上下文注入:
+#   **Bug History** (call `vibe_bug_info(file)` before modifying these files):
+#   - 🔴 `auth.py` — 密码哈希 rounds 错误
+# LLM 调用 vibe_bug_info("auth.py") → 读取详情
+# LLM 修复代码
+# LLM 调用 vibe_bug_fix(bugId="bug-001", description="rounds 改为 12")
+# → ✅ bug-001 已标记为 fixed
+
+# ═══ 第 4 步：查看所有 bug ═══
+/vibe-bugs
+# → 🐛 Bug 标记列表
+#    ✅ bug-001 — `auth.py` — 密码哈希 rounds 错误
+```
+
+### 渐进式加载机制
+
+```
+上下文注入（轻量，~2行）:
+  **Bug History**:
+  - 🔴 `auth.py` — 密码哈希 rounds 错误
+  - ✅ `user.py` — 字段验证缺失
+
+LLM 需要修改 auth.py 时:
+  → 调用 vibe_bug_info("auth.py")
+  → 返回完整详情（引入提交、行号、修复记录）
+  → LLM 知道"不要回退 rounds=12"
+```
+
+---
+
 ## 目录结构
 
 > ⚠️ **关键：所有 vibe 文件必须和 `.git` 在同一目录下。**
@@ -559,6 +609,10 @@ your-project/
 │   │   │       └── auth_ts.md
 │   │   ├── tasks/
 │   │   │   └── active.md        #   当前任务 + 进度
+│   │   ├── bugs/                #   Bug 追踪（渐进式加载）
+│   │   │   ├── INDEX.md         #     索引（文件 + 状态）
+│   │   │   ├── bug-001.md       #     单个 bug 详情
+│   │   │   └── bug-002.md
 │   │   └── release-1.0.0.md     #   Release changelog
 │   └── superpowers/
 │       └── plans/               #   writing-plans 技能输出
