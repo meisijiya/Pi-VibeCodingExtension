@@ -134,7 +134,8 @@ interface BugMarker {
   commitHash: string;
   lineRange?: string;
   description: string;
-  status: "open" | "fixed";
+  type: "bug" | "optimize" | "refactor";
+  status: "open" | "fixed" | "applied";
   fixCommit?: string;
   fixDescription?: string;
 }
@@ -693,7 +694,7 @@ async function updatePerFileDiffs(
 }
 
 /**
- * 读取所有 bug 标记（从 INDEX.md 解析）
+ * 读取所有变更标记（从 INDEX.md 解析）
  */
 async function readBugIndex(projectRoot: string): Promise<BugMarker[]> {
   const indexPath = path.join(projectRoot, BUGS_DIR, "INDEX.md");
@@ -703,14 +704,16 @@ async function readBugIndex(projectRoot: string): Promise<BugMarker[]> {
   const bugs: BugMarker[] = [];
   const entries = content.split(/^## /m).filter(Boolean);
   for (const entry of entries) {
-    const idMatch = entry.match(/^Bug (\d+)/);
+    // 匹配 🐛 bug-001, ⚡ opt-001, 🔧 ref-001 等格式
+    const idMatch = entry.match(/(?:🐛|⚡|🔧)\s+(bug|opt|ref)-(\d+)/);
     if (!idMatch) continue;
-    const id = `bug-${idMatch[1].padStart(3, "0")}`;
+    const type = idMatch[1] === "bug" ? "bug" : idMatch[1] === "opt" ? "optimize" : "refactor";
+    const id = `${idMatch[1]}-${idMatch[2].padStart(3, "0")}`;
     const file = entry.match(/\*\*File\*\*:\s*`([^`]+)`/)?.[1] || "";
     const status = entry.match(/\*\*Status\*\*:\s*(\w+)/)?.[1] as BugMarker["status"] || "open";
     const commitHash = entry.match(/\*\*Commit\*\*:\s*`([^`]+)`/)?.[1] || "";
     const description = entry.match(/\*\*Description\*\*:\s*(.+)/)?.[1]?.trim() || "";
-    bugs.push({ id, timestamp: "", file, commitHash, description, status });
+    bugs.push({ id, timestamp: "", file, commitHash, description, type, status });
   }
   return bugs;
 }
@@ -732,7 +735,7 @@ async function readBugDetail(projectRoot: string, bugId: string): Promise<string
 }
 
 /**
- * 写入 bug 标记到 INDEX.md 和独立文件
+ * 写入变更标记到 INDEX.md 和独立文件
  */
 async function writeBugMarker(
   projectRoot: string,
@@ -746,12 +749,14 @@ async function writeBugMarker(
   await writeFile(bugPath, detailContent);
 
   // 更新 INDEX.md
+  const typeIcon = bug.type === "bug" ? "🐛" : bug.type === "optimize" ? "⚡" : "🔧";
   const indexPath = path.join(projectRoot, BUGS_DIR, "INDEX.md");
   const existing = await readFileSafe(indexPath) || "# Bug Index\n";
   const entry = [
-    `## Bug ${bug.id.replace("bug-", "")}`,
+    `## ${typeIcon} ${bug.id}`,
     "",
     `- **File**: \`${bug.file}\``,
+    `- **Type**: ${bug.type}`,
     `- **Status**: ${bug.status}`,
     `- **Commit**: \`${bug.commitHash}\``,
     `- **Description**: ${bug.description}`,
@@ -925,13 +930,16 @@ async function buildContextInjection(
   // 渐进式 bug 注入（只注入文件名 + 数量）
   const bugs = await readBugIndex(state.projectRoot);
   if (bugs.length > 0) {
-    const openBugs = bugs.filter((b) => b.status === "open");
-    const fixedBugs = bugs.filter((b) => b.status === "fixed");
-    if (openBugs.length > 0 || fixedBugs.length > 0) {
+    const openBugs = bugs.filter((b) => b.type === "bug" && b.status === "open");
+    const fixedBugs = bugs.filter((b) => b.type === "bug" && b.status === "fixed");
+    const optimizations = bugs.filter((b) => b.type === "optimize");
+    if (openBugs.length > 0 || fixedBugs.length > 0 || optimizations.length > 0) {
       lines.push("");
-      lines.push("**Bug History** (call `vibe_bug_info(file)` before modifying these files):");
+      lines.push("**Change History** (call `vibe_bug_info(file)` before modifying these files):");
       for (const bug of bugs) {
-        const icon = bug.status === "open" ? "🔴" : "✅";
+        const icon = bug.type === "bug"
+          ? (bug.status === "open" ? "🔴" : "✅")
+          : "⚡";
         lines.push(`- ${icon} \`${bug.file}\` — ${bug.description}`);
       }
     }
@@ -3244,6 +3252,7 @@ export default function (pi: ExtensionAPI) {
         commitHash: lastCommit,
         lineRange,
         description,
+        type: "bug",
         status: "open",
       };
 
@@ -4182,6 +4191,7 @@ export default function (pi: ExtensionAPI) {
         commitHash: lastCommit,
         lineRange: params.lines,
         description: params.description,
+        type: "bug",
         status: "open",
       };
 
@@ -4218,7 +4228,8 @@ export default function (pi: ExtensionAPI) {
     description: "标记 bug 已修复。记录修复提交和描述。",
     promptSnippet: "Mark a bug as fixed",
     promptGuidelines: [
-      "Use vibe_bug_fix after you have fixed a previously reported bug.",
+      "IMPORTANT: Call vibe_bug_fix AFTER vibe_checkpoint, not before. The fix commit hash is only available after the checkpoint is created.",
+      "Use vibe_bug_fix after you have fixed a previously reported bug and committed the fix.",
       "Provide the bug ID and a description of the fix.",
     ],
     parameters: Type.Object({
@@ -4267,11 +4278,11 @@ export default function (pi: ExtensionAPI) {
     name: "vibe_bug_info",
     label: "Vibe Bug Info",
     description:
-      "读取指定文件的 bug 详情。在修改有 bug 历史的文件前调用，了解问题和修复记录。",
-    promptSnippet: "Read bug details for a file before modifying it",
+      "读取指定文件的变更历史（bug + 优化）。在修改有变更记录的文件前调用，了解问题和优化记录。",
+    promptSnippet: "Read change history for a file before modifying it",
     promptGuidelines: [
-      "Use vibe_bug_info before modifying files that have bug history.",
-      "The context injection lists files with bugs — call this tool to read details.",
+      "Use vibe_bug_info before modifying files that have change history (bugs or optimizations).",
+      "The context injection lists files with changes — call this tool to read details.",
     ],
     parameters: Type.Object({
       file: Type.String({ description: "要查询的文件路径" }),
@@ -4288,6 +4299,73 @@ export default function (pi: ExtensionAPI) {
         lines.push(detail || `(${bug.id}: ${bug.description})`);
       }
       return { content: [{ type: "text", text: lines.join("\n---\n") }] };
+    },
+  });
+
+  /**
+   * vibe_optimize — LLM 标记优化点
+   */
+  pi.registerTool({
+    name: "vibe_optimize",
+    label: "Vibe Optimize",
+    description:
+      "标记优化点。记录优化的文件、位置、内容。用于开发过程中发现可优化代码时调用。",
+    promptSnippet: "Mark an optimization made during development",
+    promptGuidelines: [
+      "Use vibe_optimize when you optimize, refactor, or improve existing code.",
+      "Provide the file path, optional line range, and a description of the optimization.",
+      "Call vibe_optimize AFTER vibe_checkpoint (same as vibe_bug_fix).",
+    ],
+    parameters: Type.Object({
+      file: Type.String({ description: "优化文件路径" }),
+      lines: Type.Optional(Type.String({ description: "优化行范围，如 '15-23' 或 '42'" })),
+      description: Type.String({ description: "优化描述" }),
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      if (!state.enabled) {
+        return { content: [{ type: "text", text: "⚠️ Vibe 工作流未启用" }] };
+      }
+
+      const lastCommit = gitExec(state.projectRoot, [
+        "log", "-1", "--format=%h", "--", params.file,
+      ]) || "unknown";
+
+      const allMarkers = await readBugIndex(state.projectRoot);
+      const optNum = allMarkers.filter((m) => m.type === "optimize").length + 1;
+      const optId = `opt-${String(optNum).padStart(3, "0")}`;
+
+      const marker: BugMarker = {
+        id: optId,
+        timestamp: getTimestamp(),
+        file: params.file,
+        commitHash: lastCommit,
+        lineRange: params.lines,
+        description: params.description,
+        type: "optimize",
+        status: "applied",
+      };
+
+      const detail = [
+        `# ⚡ ${optId}: ${params.description}`,
+        "",
+        `- **Status**: applied`,
+        `- **File**: \`${params.file}\``,
+        params.lines ? `- **Lines**: ${params.lines}` : "",
+        `- **Commit**: \`${lastCommit}\``,
+        `- **Timestamp**: ${marker.timestamp}`,
+        "",
+        `## Description`, "",
+        params.description, "",
+      ].filter(Boolean).join("\n");
+
+      await writeBugMarker(state.projectRoot, marker, detail);
+
+      return {
+        content: [{
+          type: "text",
+          text: `⚡ 优化标记: ${optId}\n文件: ${params.file}${params.lines ? `:${params.lines}` : ""}\n提交: ${lastCommit}\n描述: ${params.description}`,
+        }],
+      };
     },
   });
 

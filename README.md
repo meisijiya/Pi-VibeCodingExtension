@@ -133,8 +133,9 @@ Task 5: 安全工具（JWT + 密码）
 | `vibe_checkpoint` | LLM 自动调用 | 完成 step/task 后提交 |
 | `vibe_status` | LLM 自动调用 | 查询工作流状态 |
 | `vibe_bug` | LLM 自动调用 | 标记发现 bug（记录文件、位置、提交） |
-| `vibe_bug_fix` | LLM 自动调用 | 标记 bug 已修复 |
-| `vibe_bug_info` | LLM 自动调用 | 读取文件的 bug 详情（按需加载） |
+| `vibe_bug_fix` | LLM 自动调用 | 标记 bug 已修复（⚠️ 在 vibe_checkpoint 后调用） |
+| `vibe_bug_info` | LLM 自动调用 | 读取文件的变更历史（bug + 优化，按需加载） |
+| `vibe_optimize` | LLM 自动调用 | 标记优化点（记录文件、位置、提交） |
 | `minimax_describe_image` | LLM 自动调用 | 主力模型"看"图 |
 | `minimax_web_search` | LLM 自动调用 | 主力模型搜索网络 |
 | `minimax_generate` | LLM 自动调用 | 生成图片/视频/音频 |
