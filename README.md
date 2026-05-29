@@ -9,7 +9,7 @@
 解法只有一个：**最小化每一步，让 AI 始终知道「在做什么、做了什么、边界在哪」**。这个 pi 扩展就是这套方法论的工程化落地。
 
 [![pi-package](https://img.shields.io/badge/pi-package-blue)](https://pi.dev/packages)
-[![version](https://img.shields.io/badge/version-5.8.0-green)](#)
+[![version](https://img.shields.io/badge/version-5.9.0-green)](#)
 [![license](https://img.shields.io/badge/license-MIT-orange)](LICENSE)
 
 ---
@@ -83,7 +83,7 @@ Task 5: 安全工具（JWT + 密码）
 
 | 命令 | 用途 | 示例 |
 |------|------|------|
-| `/vibe-init` | 初始化项目（创建目录 + AGENTS.md 模板） | `/vibe-init` |
+| `/vibe-init` | 初始化项目（创建目录 + AGENTS.md + .gitignore 推荐条目） | `/vibe-init` |
 | `/vibe-install-skills [-l]` | 安装配套 skills（`-l` 项目级，默认用户级） | `/vibe-install-skills -l` |
 | `/vibe-enable` | 启用工作流（开始上下文注入） | `/vibe-enable` |
 | `/vibe-disable` | 禁用工作流 | `/vibe-disable` |
@@ -100,8 +100,9 @@ Task 5: 安全工具（JWT + 密码）
 |------|------|------|
 | `/vibe-branch <name>` | 创建功能分支 + 新 session | `/vibe-branch feature-payment` |
 | `/vibe-merge` | 合并当前分支回主分支 | `/vibe-merge` |
-| `/vibe-squash [N]` | 压缩 N 个 checkpoint → 1 个 clean commit | `/vibe-squash 5` |
-| `/vibe-rollback [N]` | 回滚到指定 checkpoint（自动备份） | `/vibe-rollback 3` |
+| `/vibe-squash [N]` | 压缩 N 个 checkpoint → 1 个 clean commit（保留原始 message） | `/vibe-squash 5` |
+| `/vibe-rollback [N]` | 回滚到指定 checkpoint（自动备份 + 错误详情） | `/vibe-rollback 3` |
+| `/vibe-delete` | 删除 vibe 工作流环境（docs/vibe/ + 状态），不可撤销 | `/vibe-delete` |
 | `/vibe-redo <step>` | 标记 step 为未完成（反向更新 checkbox） | `/vibe-redo "Step 2: 编写 JWT"` |
 | `/vibe-bug <file> [lines]` | 标记发现 bug | `/vibe-bug auth.py 15-23 密码哈希错误` |
 | `/vibe-bug-fix <id>` | 标记 bug 已修复 | `/vibe-bug-fix bug-001` |
@@ -132,7 +133,7 @@ Task 5: 安全工具（JWT + 密码）
 
 | LLM 工具 | 触发方式 | 用途 |
 |----------|---------|------|
-| `vibe_checkpoint` | LLM 自动调用 | 完成 step/task 后提交 |
+| `vibe_checkpoint` | LLM 自动调用 | 完成 step/task 后提交（支持中文 message / 自动生成含文件 stat 的概述） |
 | `vibe_status` | LLM 自动调用 | 查询工作流状态 |
 | `vibe_bug` | LLM 自动调用 | 标记发现 bug（记录文件、位置、提交） |
 | `vibe_bug_fix` | LLM 自动调用 | 标记 bug 已修复（⚠️ 在 vibe_checkpoint 后调用） |
@@ -175,6 +176,7 @@ pi
 /vibe-init
 # → 创建 docs/vibe/sessions/、diffs/、tasks/
 # → 生成 AGENTS.md 模板（如果不存在）
+# → 追加 .gitignore 推荐条目（可跳过）
 
 # ═══ 第 2 步：编辑 AGENTS.md（项目宪法） ═══
 # 写下：
@@ -273,7 +275,7 @@ docs/vibe/tasks/active.md   docs/vibe/diffs/last.md
 # 如果觉得 2 个 checkpoint 太碎，压缩为 1 个
 /vibe-squash 2
 # → ⚠️ 确认对话框
-# → ✅ 2 commits → 1 clean "[feature-payment] 2 checkpoints"
+# → ✅ 2 commits → 1 clean commit "squash: 合并 feature-payment 的 2 个 checkpoint"
 
 # ═══ 第 6 步：合并回 main ═══
 /vibe-merge
@@ -329,7 +331,7 @@ feature-payment ●──● (CP #1, #2)
 
 # ═══ 第 4 步：提交 ═══
 # vibe_checkpoint ← 自动或手动触发
-# → Commit: "[优化登录页面UI] checkpoint #3: 2 file(s)"
+# → Commit: "fix(ui): 修复登录按钮颜色 #333→#3366ff，补上忘记密码链接"
 ```
 
 ### 自动路由原理
@@ -502,9 +504,9 @@ git push origin main --tags
 # ═══ 第 4 步：整理提交历史（可选） ═══
 # 如果觉得 commit 太碎，压缩整理:
 /vibe-squash 4
-# → 列出最近 4 个 checkpoint
+# → 列出最近 4 个 checkpoint（含原始 message）
 # → ⚠️ 确认对话框（不可逆操作！）
-# → ✅ 4 commits → 1 clean commit
+# → ✅ 4 commits → 1 clean commit（保留被压缩 commit 的全部 subject）
 ```
 
 ### 安全机制
@@ -763,7 +765,7 @@ pi install git:github.com/meisijiya/Pi-VibeCodingExtension/packages/tracker
 pi install git:github.com/meisijiya/Pi-VibeCodingExtension/packages/multimodal
 ```
 
-**安装后即用：** 19 个命令 · 8 个 LLM 工具 · 完整的 Vibe Coding 工作流
+**安装后即用：** 20 个命令 · 8 个 LLM 工具 · 完整的 Vibe Coding 工作流
 
 ### 前置依赖
 

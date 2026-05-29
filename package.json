@@ -1,7 +1,7 @@
 {
   "name": "pi-vibe-workflow",
-  "version": "5.4.0",
-  "description": "Vibe Coding 工作流全家桶 for pi — 原子化开发、Git checkpoint、Context7 最新文档、MiniMax 识图/搜索/生成、智能代码搜索",
+  "version": "5.9.0",
+  "description": "Vibe Coding 工作流全家桶 for pi — 原子化开发、Git checkpoint（中文+stat）、Context7 最新文档、MiniMax 识图/搜索/生成、智能代码搜索",
   "keywords": [
     "pi-package",
     "pi-extension",
