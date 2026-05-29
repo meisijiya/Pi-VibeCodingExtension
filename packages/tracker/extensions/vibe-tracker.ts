@@ -832,4 +832,8 @@ export default function (pi: ExtensionAPI) {
       };
     },
   });
+
+  console.log(
+    "[vibe-tracker] Extension loaded — Bug/Optimization tracking ready",
+  );
 }

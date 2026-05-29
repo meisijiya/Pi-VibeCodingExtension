@@ -3771,6 +3771,6 @@ export default function (pi: ExtensionAPI) {
   });
 
   console.log(
-    "[vibe-workflow] Extension loaded — run /vibe-init to set up a project, /vibe-enable to activate",
+    "[vibe-core] Extension loaded — run /vibe-init to set up a project, /vibe-enable to activate",
   );
 }
