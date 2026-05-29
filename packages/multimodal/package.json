@@ -1,0 +1,32 @@
+{
+  "name": "pi-vibe-multimodal",
+  "version": "5.8.0",
+  "description": "Vibe Coding 多模态工具 — MiniMax 识图/搜索/生成、Mimo 模型切换",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "vibe-coding",
+    "multimodal",
+    "minimax"
+  ],
+  "author": "ljh2923",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/meisijiya/Pi-VibeCodingExtension"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "files": [
+    "extensions/",
+    "skills/",
+    "README.md"
+  ]
+}

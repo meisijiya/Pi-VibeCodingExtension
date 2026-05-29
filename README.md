@@ -744,17 +744,23 @@ your-project/
 
 ## 安装方式
 
+### 方式一：完整安装（推荐）
+
 ```bash
-# 一步安装全部（vibe-workflow + context7）
 pi install git:github.com/meisijiya/Pi-VibeCodingExtension
+```
 
-# 快速启动
-pi
-/vibe-init
-/vibe-enable
+### 方式二：按需安装
 
-# 可选：Context7 最新文档（需要注册 API Key）
-export CONTEXT7_API_KEY=ctx7sk-xxx   # https://context7.com
+```bash
+# 核心工作流（必须）
+pi install git:github.com/meisijiya/Pi-VibeCodingExtension/packages/core
+
+# 变更追踪（bug/optimization）
+pi install git:github.com/meisijiya/Pi-VibeCodingExtension/packages/tracker
+
+# MiniMax 多模态工具
+pi install git:github.com/meisijiya/Pi-VibeCodingExtension/packages/multimodal
 ```
 
 **安装后即用：** 19 个命令 · 8 个 LLM 工具 · 完整的 Vibe Coding 工作流
