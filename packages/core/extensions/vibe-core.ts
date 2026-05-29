@@ -1726,6 +1726,20 @@ export default function (pi: ExtensionAPI) {
    * ⚠️ v4.1 Token 节省：
    *   — 工具模型（mimo、minimax）注入精简上下文（~50 tokens vs ~300 tokens）
    */
+  pi.on("session_start", async (_event, ctx) => {
+    await restoreState(ctx);
+    lastInjectedStateHash = "";
+    resetMetrics();
+    refreshWidget(ctx);
+
+    const projectRoot = state.projectRoot;
+    if (projectRoot) {
+      await ensureDir(path.join(projectRoot, SESSIONS_DIR));
+      await ensureDir(path.join(projectRoot, DIFFS_DIR));
+      await ensureDir(path.join(projectRoot, BY_FILE_DIR));
+    }
+  });
+
   pi.on("before_agent_start", async (event, ctx) => {
     if (!state.enabled) return;
 
