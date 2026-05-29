@@ -113,6 +113,8 @@ Task 5: 安全工具（JWT + 密码）
 | 命令 | 用途 | 示例 |
 |------|------|------|
 | `/vibe-plan` | 桥接 /skill:writing-plans 生成计划 | `/vibe-plan` |
+| `/vibe-plan-diff` | 显示 plan 文件的变更（delta 追踪） | `/vibe-plan-diff` |
+| `/vibe-features` | 生成功能状态 JSON（从 plan 自动生成） | `/vibe-features` |
 | `/vibe-metrics` | 工作流统计面板 | `/vibe-metrics` |
 | `/vibe-autocheckpoint` | 开启/关闭自动 checkpoint | `/vibe-autocheckpoint off` |
 | `/vibe-model` | 快速切换模型（pro/flash/mmx/mimo/back） | `/vibe-model flash` |

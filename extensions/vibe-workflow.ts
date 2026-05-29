@@ -162,6 +162,9 @@ const EXT_NAME = "vibe-workflow";
 /** 最大 diff 文件大小（避免一个 diff 撑爆上下文） */
 const MAX_DIFF_SIZE_BYTES = 30_000; // 30KB
 
+/** 文档分片阈值（超过此行数自动分片） */
+const MAX_LINES_PER_FILE = 100;
+
 // =============================================================================
 // 3. 工具函数
 // =============================================================================
@@ -763,6 +766,50 @@ async function writeBugMarker(
     "",
   ].join("\n");
   await writeFile(indexPath, existing.replace(/\n$/, "") + "\n\n" + entry);
+
+  // 自动分片检查
+  await autoSplitIfNeeded(indexPath);
+}
+
+/**
+ * 检查文件是否超过行数限制，超过则自动分片
+ * 返回：如果分片了，返回新文件路径；否则返回原路径
+ */
+async function autoSplitIfNeeded(
+  filePath: string,
+  maxLines: number = MAX_LINES_PER_FILE,
+): Promise<string> {
+  const content = await readFileSafe(filePath);
+  if (!content) return filePath;
+
+  const lines = content.split("\n");
+  if (lines.length <= maxLines) return filePath;
+
+  // 需要分片：找到下一个序号
+  const dir = path.dirname(filePath);
+  const ext = path.extname(filePath);
+  const base = path.basename(filePath, ext);
+  let seq = 1;
+  let newPath: string;
+  do {
+    newPath = path.join(dir, `${base}-${String(seq).padStart(3, "0")}${ext}`);
+    seq++;
+  } while (fs.existsSync(newPath));
+
+  // 将当前内容移到新文件
+  await writeFile(newPath, content);
+
+  // 原文件只保留索引头
+  const header = [
+    `# ${base} — Part ${seq - 1}`,
+    "",
+    `> 内容已分片到 ${path.basename(newPath)}`,
+    `> 历史文件: ${base}-001${ext}, ${base}-002${ext}, ...`,
+    "",
+  ].join("\n");
+  await writeFile(filePath, header);
+
+  return newPath;
 }
 
 /**
@@ -924,25 +971,18 @@ async function buildContextInjection(
     `- \`${path.join(VIBE_DIR, "tasks", ACTIVE_TASKS_FILE)}\` — task list & progress`,
   );
   lines.push(
-    `- \`docs/superpowers/plans/\` — implementation plan with task/step structure (read this to find step text for completedStep)`,
+    `- \`docs/superpowers/plans/\` — implementation plan with task/step structure`,
   );
 
-  // 渐进式 bug 注入（只注入文件名 + 数量）
+  // 变更历史（只注入路径，详情按需加载）
   const bugs = await readBugIndex(state.projectRoot);
   if (bugs.length > 0) {
-    const openBugs = bugs.filter((b) => b.type === "bug" && b.status === "open");
-    const fixedBugs = bugs.filter((b) => b.type === "bug" && b.status === "fixed");
-    const optimizations = bugs.filter((b) => b.type === "optimize");
-    if (openBugs.length > 0 || fixedBugs.length > 0 || optimizations.length > 0) {
-      lines.push("");
-      lines.push("**Change History** (call `vibe_bug_info(file)` before modifying these files):");
-      for (const bug of bugs) {
-        const icon = bug.type === "bug"
-          ? (bug.status === "open" ? "🔴" : "✅")
-          : "⚡";
-        lines.push(`- ${icon} \`${bug.file}\` — ${bug.description}`);
-      }
-    }
+    const openCount = bugs.filter((b) => b.type === "bug" && b.status === "open").length;
+    const fixedCount = bugs.filter((b) => b.type === "bug" && b.status === "fixed").length;
+    const optCount = bugs.filter((b) => b.type === "optimize").length;
+    lines.push(
+      `- \`${path.join(BUGS_DIR, "INDEX.md")}\` — change history: ${openCount} open bugs, ${fixedCount} fixed, ${optCount} optimizations (read before modifying affected files)`,
+    );
   }
 
   lines.push("");
@@ -2691,6 +2731,92 @@ export default function (pi: ExtensionAPI) {
       ctx.ui.notify(
         `📋 已排队 /skill:writing-plans\n` +
           `   上下文: ${contextParts.join(" · ")}`,
+        "info",
+      );
+    },
+  });
+
+  /**
+   * /vibe-plan-diff — 显示 plan 文件的变更（delta 追踪）
+   */
+  pi.registerCommand("vibe-plan-diff", {
+    description: "显示 plan 文件的变更（与上次提交对比）",
+    handler: async (_args, ctx) => {
+      const plansDir = path.join(state.projectRoot, "docs", "superpowers", "plans");
+      if (!fs.existsSync(plansDir)) {
+        ctx.ui.notify("📝 暂无 plan 文件", "info");
+        return;
+      }
+
+      const files = fs.readdirSync(plansDir).filter((f) => f.endsWith(".md"));
+      if (files.length === 0) {
+        ctx.ui.notify("📝 暂无 plan 文件", "info");
+        return;
+      }
+
+      const lines: string[] = ["## 📋 Plan Delta", ""];
+      let hasChanges = false;
+
+      for (const file of files) {
+        const filePath = path.join(plansDir, file);
+        const diff = gitExec(state.projectRoot, ["diff", "HEAD", "--", filePath]);
+        if (!diff) continue;
+
+        hasChanges = true;
+        lines.push(`### ${file}`);
+        lines.push("```diff");
+        lines.push(diff);
+        lines.push("```");
+        lines.push("");
+      }
+
+      if (!hasChanges) {
+        ctx.ui.notify("✅ Plan 文件无变更", "info");
+        return;
+      }
+
+      ctx.ui.notify(lines.join("\n"), "info");
+    },
+  });
+
+  /**
+   * /vibe-features — 生成功能状态 JSON（从 plan 自动生成）
+   */
+  pi.registerCommand("vibe-features", {
+    description: "生成功能状态 JSON（从 plan 自动生成）",
+    handler: async (_args, ctx) => {
+      const plan = await readPlanTodos(state.projectRoot);
+      if (!plan || plan.tasks.length === 0) {
+        ctx.ui.notify("📝 暂无 plan，无法生成 features", "info");
+        return;
+      }
+
+      const features = plan.tasks.map((task) => {
+        const total = task.steps.length;
+        const done = task.steps.filter((s) => s.done).length;
+        const status = done === 0 ? "pending" : done === total ? "done" : "in-progress";
+        return {
+          name: task.name,
+          status,
+          progress: `${done}/${total}`,
+          steps: task.steps.map((s) => ({
+            text: s.text,
+            done: s.done,
+          })),
+        };
+      });
+
+      const outputPath = path.join(state.projectRoot, VIBE_DIR, "features.json");
+      await writeFile(outputPath, JSON.stringify(features, null, 2));
+
+      const summary = features.map((f) => {
+        const icon = f.status === "done" ? "✅" : f.status === "in-progress" ? "🔄" : "⬜";
+        return `${icon} ${f.name} (${f.progress})`;
+      });
+
+      ctx.ui.notify(
+        `📊 Features 已生成: docs/vibe/features.json\n\n` +
+          summary.join("\n"),
         "info",
       );
     },
