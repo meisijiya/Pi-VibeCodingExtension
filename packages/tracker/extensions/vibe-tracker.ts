@@ -415,9 +415,8 @@ async function readPlanTodos(projectRoot: string): Promise<PlanData | null> {
 
 /**
  * 注册 vibe-tracker 扩展
- * @param pi - ExtensionAPI 实例
  */
-export function register(pi: ExtensionAPI): void {
+export default function (pi: ExtensionAPI) {
   // 从 vibe-core 获取共享状态
   const state: VibeState = (() => {
     try {

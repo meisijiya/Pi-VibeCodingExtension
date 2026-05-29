@@ -13,7 +13,6 @@
  *   - minimax_describe_image — 通过 MiniMax CLI 描述图片内容
  *   - minimax_web_search     — 通过 MiniMax CLI 进行网络搜索
  *   - minimax_generate       — 通过 MiniMax CLI 生成图片/视频/音频
- *   - smart_search           — 多策略代码搜索
  *
  * 状态共享：通过 pi.getEntry("vibe-core") 读取 vibe-core 的状态。
  *
@@ -922,68 +921,6 @@ export default function (pi: ExtensionAPI) {
           },
         ],
         details: { type: genType, prompt: params.prompt, success: true },
-      };
-    },
-  });
-
-  // ──── smart_search tool（多策略代码搜索）──
-
-  pi.registerTool({
-    name: "smart_search",
-    label: "Smart Search",
-    description:
-      "多策略代码搜索。先用 rg 精确匹配，无结果时自动尝试大小写不敏感、单词拆分等策略。" +
-      " 当内置 grep 无结果时使用此工具进行更广泛的搜索。",
-    promptSnippet: "Multi-strategy code search with automatic fallbacks",
-    promptGuidelines: [
-      "Use smart_search when built-in grep returns no results.",
-      "smart_search automatically tries case-insensitive and word-split variations.",
-      "Prefer built-in grep for exact matches; use smart_search for broader exploration.",
-    ],
-    parameters: Type.Object({
-      query: Type.String({
-        description: "搜索查询（如 'authentication', 'JWT token'）",
-      }),
-    }),
-    async execute(_id, params, _signal, _onUpdate, ctx) {
-      const rgBin = path.join(
-        process.env.PI_CODING_AGENT_DIR ||
-          path.join(process.env.HOME || "/home", ".pi", "agent"),
-        "bin",
-        "rg",
-      );
-
-      const strategies = [
-        { label: "exact", args: ["-n", "--no-heading", "-C", "1", params.query, "."] },
-        { label: "case-insensitive", args: ["-i", "-n", "--no-heading", "-C", "1", params.query, "."] },
-        { label: "word-split", args: ["-i", "-n", "--no-heading", "-C", "1", ...params.query.split(/\s+/).slice(0, 3).flatMap((w: string) => ["-e", w]), "."] },
-      ];
-
-      const results: string[] = [];
-      let total = 0;
-      for (const s of strategies) {
-        if (total > 0 && s.label !== "exact") break;
-        if (total > 30) break;
-        const r = await pi.exec(rgBin, s.args, { cwd: ctx.cwd, timeout: 10_000 });
-        const out = r.stdout?.trim() || "";
-        if (out) {
-          const lines = out.split("\n").filter((l: string) => !results.includes(l));
-          if (lines.length > 0) {
-            results.push(`### ${s.label}`);
-            results.push(...lines.slice(0, 40));
-            if (lines.length > 40) results.push(`... +${lines.length - 40} more`);
-            total += lines.length;
-          }
-        }
-      }
-
-      return {
-        content: [{
-          type: "text" as const,
-          text: results.length > 0
-            ? `## Smart Search: "${params.query}"\n${results.join("\n")}`
-            : `## Smart Search: "${params.query}"\n\nNo matches. Try rephrasing.`,
-        }],
       };
     },
   });
